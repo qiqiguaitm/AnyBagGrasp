@@ -332,6 +332,7 @@ class VideoProcessor:
                     'id': int(self.annotation_id),
                     'image_id': int(image_id),
                     'category_id': int(category_id),
+                    'cat': int(category_id),  # 添加cat字段，内容与category_id一致，用于兼容
                     'bbox': bbox_coco,
                     'area': area,
                     'iscrowd': 0,
