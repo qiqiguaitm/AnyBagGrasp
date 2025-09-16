@@ -13,6 +13,7 @@ data_root = 'data'
 # Annotation file path - change this to visualize different datasets
 # fp = r"data/bag/0912/anno/backfront_01.json"
 fp = r"data/bag/0915_layerbags/anno/backfront_grasp01.json"
+fp = r"data/bag/0916_backfront_val/anno/backfront_grasp01.json"
 
 # Validation
 if not os.path.isfile(fp) or not os.path.isdir(data_root):
@@ -168,9 +169,10 @@ print(f"Total samples: {len(ds)}")
 print(f"{'='*50}\n")
 
 print("Launching FiftyOne app...")
-session = fo.launch_app(ds, port=5151)  # Local app on port 5151
+# Launch app with remote access enabled (bind to all interfaces)
+session = fo.launch_app(ds, port=5151, address="0.0.0.0", remote=True)
 print(f"✓ App launched successfully!")
-print(f"✓ Open your browser and navigate to: http://localhost:5151")
+print(f"✓ Open your browser and navigate to: http://localhost:5151 or http://<your-ip>:5151")
 print(f"\nPress Ctrl+C to stop the app...")
 
 # Keep the app running
