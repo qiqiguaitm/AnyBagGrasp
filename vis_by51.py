@@ -6,28 +6,29 @@ from fiftyone.utils.coco import COCODetectionDatasetImporter
 from pycocotools import mask as coco_mask
 from pycocotools.coco import COCO
 
+# Configuration
 debug = False
+data_root = 'data'
 
-
-
-fp = r"data/bag/0912/anno/backfront_01.json"
+# Annotation file path - change this to visualize different datasets
+# fp = r"data/bag/0912/anno/backfront_01.json"
 fp = r"data/bag/0915_layerbags/anno/backfront_grasp01.json"
-# fp = r"/comp_robot/dino-3D/grasp/Grasp-Anything/ann3/all_s100.shape.rbc0.75.rbc0.75.fix.json"
 
-data_root='data'
-
-
+# Validation
 if not os.path.isfile(fp) or not os.path.isdir(data_root):
-    print(f"{fp} not found or {data_root} not found")
+    print(f"Error: {fp} not found or {data_root} not found")
     sys.exit(1)
 
-dn = os.path.basename(fp)
-existing = fo.list_datasets()
-if dn in existing:
-    fo.delete_dataset(dn)
+# Dataset management
+dataset_name = os.path.basename(fp)
+existing_datasets = fo.list_datasets()
+if dataset_name in existing_datasets:
+    fo.delete_dataset(dataset_name)
 
+# Visualization mode (0: built-in COCO support, 1: custom with affordance support)
+vis_mode = 1
 
-if 0:  # built-in support for COCO, simple but cannot visualize afforadance
+if vis_mode == 0:  # Built-in COCO support (simple but cannot visualize affordance)
     data_dir = "."
     images_path = f"{data_dir}/image"
     annotations_path = f"{data_dir}/{fp}"
@@ -40,105 +41,137 @@ if 0:  # built-in support for COCO, simple but cannot visualize afforadance
         shuffle=False,
     )
 
-    ds = fo.Dataset.from_importer(importer, name=dn)
+    ds = fo.Dataset.from_importer(importer, name=dataset_name)
 
-
-if 1:  #
-    shot = 200
-    debug = False
-    ds = fo.Dataset(dn)
+elif vis_mode == 1:  # Custom visualization with affordance support
+    # Configuration
+    max_samples = 200  # Maximum number of samples to load (set to None for all)
+    
+    # Create dataset
+    ds = fo.Dataset(dataset_name)
     coco = COCO(annotation_file=fp)
+    
+    # Process each image in the COCO dataset
     for idx, (img_id, info) in enumerate(coco.imgs.items()):
-        # Get dimensions from image info, fallback to defaults if not present
+        # Get image dimensions
         width = info.get("width", 416)
         height = info.get("height", 416)
         
-        fp = os.path.join(data_root, info["file_name"])
-        sample = fo.Sample(filepath=fp, text=info.get("text", ""))
+        # Create sample with image path
+        image_path = os.path.join(data_root, info["file_name"])
+        sample = fo.Sample(filepath=image_path, text=info.get("text", ""))
+        
+        # Load annotations for this image
         ann_ids = coco.getAnnIds(imgIds=img_id)
         anns = coco.loadAnns(ann_ids)
-        dts = []
+        
+        # Collections for detections and shapes
+        detections = []
         tags = []
-        shps = []
-        for i, ann in enumerate(anns):
+        shapes = []
+        
+        # Process each annotation
+        for ann_idx, ann in enumerate(anns):
+            # Get category information
             cat_id = ann["cat"]
-            # Convert category ID to name if available
             if cat_id in coco.cats:
-                cat = coco.cats[cat_id]["name"]
+                category = coco.cats[cat_id]["name"]
             else:
-                cat = str(cat_id)  # Fallback to string ID if name not found
-            tags.append(cat)
+                category = str(cat_id)
+            tags.append(category)
 
-            # for bbox and mask
-            x, y, w, h = ann["bbox"]  # xywh in pixel
-            x1, y1, w1, h1 = x / width, y / height, w / width, h / height
-            x, y, w, h = int(x), int(y), int(w), int(h)
+            # Extract bounding box (COCO format: x, y, width, height in pixels)
+            x, y, w, h = ann["bbox"]
+            # Convert to normalized coordinates for FiftyOne
+            x_norm, y_norm, w_norm, h_norm = x / width, y / height, w / width, h / height
+            x_int, y_int, w_int, h_int = int(x), int(y), int(w), int(h)
+            
+            # Extract mask patch
             mask = coco_mask.decode(ann["segmentation"])
-            mask_patch = mask[y : y + h + 1, x : x + w + 1]
-            dt = fo.Detection(bounding_box=(x1, y1, w1, h1), mask=mask_patch, label=cat)
-            dts.append(dt)
+            mask_patch = mask[y_int : y_int + h_int + 1, x_int : x_int + w_int + 1]
+            
+            # Create detection with mask
+            detection = fo.Detection(
+                bounding_box=(x_norm, y_norm, w_norm, h_norm), 
+                mask=mask_patch, 
+                label=category
+            )
+            detections.append(detection)
 
-            # for affordance
-            affs = ann["affordance"]
-            rbs = []
-            for j in range(len(affs)):
-                xc, yc, w2, h2, theta = affs[j]  # xc,y, w, h in pixel, theta in radian
-                theta = (
-                    theta  # Positive angle means rotate anti-clockwise from horizontal.
+            # Process affordances (grasp points)
+            affordances = ann["affordance"]
+            rotated_boxes = []
+            for aff_idx, affordance in enumerate(affordances):
+                # Extract rotated bbox parameters (x_center, y_center, width, height, theta)
+                xc, yc, w_aff, h_aff, theta = affordance
+                # Create rotated box polyline for visualization
+                rot_box = fo.Polyline.from_rotated_box(
+                    xc, yc, w_aff, h_aff, theta, 
+                    frame_size=(width, height), 
+                    label=category
                 )
-                rb = fo.Polyline.from_rotated_box(
-                    xc, yc, w2, h2, theta, frame_size=(width, height), label=cat
-                )
-                rbs.append(rb)
-            sample[f"aff{i}"] = fo.Polylines(polylines=rbs)
+                rotated_boxes.append(rot_box)
+            
+            # Add affordances as a separate field
+            sample[f"aff{ann_idx}"] = fo.Polylines(polylines=rotated_boxes)
 
-            # for shape
-
+            # Process shape annotations if available
             if "shapes" in ann or "shape" in ann:
                 offset = 0
-                if "shape" in ann:
-                    shapes = [ann["shape"]]
-                else:
-                    shapes = ann["shapes"]
-                for shape in shapes:
-                    rle = shape["guess_mask"]
-                    x3 = x - offset
-                    x3 = max(x3, 0)
-                    x4 = x + w + 1 + offset
-                    x4 = min(x4, width)
-                    y3 = y - offset
-                    y3 = max(y3, 0)
-                    y4 = y + h + 1 + offset
-                    y4 = min(y4, height)
+                shape_list = [ann["shape"]] if "shape" in ann else ann["shapes"]
+                
+                for shape_data in shape_list:
+                    # Decode shape mask
+                    rle = shape_data["guess_mask"]
+                    shape_name = shape_data["name"]
+                    
+                    # Calculate expanded bounding box for shape
+                    x3 = max(x_int - offset, 0)
+                    x4 = min(x_int + w_int + 1 + offset, width)
+                    y3 = max(y_int - offset, 0)
+                    y4 = min(y_int + h_int + 1 + offset, height)
 
-                    guess_mask = coco_mask.decode(rle)[y3:y4, x3:x4]
-                    # guess_mask = coco_mask.decode(rle)
-                    shape_name = shape["name"]
-                    fill = fo.Detection(
+                    # Decode and crop shape mask
+                    decoded_mask = coco_mask.decode(rle)
+                    shape_mask = decoded_mask[y3:y4, x3:x4]
+                    
+                    # Create shape detection
+                    shape_detection = fo.Detection(
                         bounding_box=(
                             x3 / width,
                             y3 / height,
                             (x4 - x3) / width,
                             (y4 - y3) / height,
                         ),
-                        mask=guess_mask,
+                        mask=shape_mask,
                         label=shape_name,
                     )
-                    # print("add shape")
-                    shps.append(fill)
-        if len(shps) > 0:
-            sample["shape"] = fo.Detections(detections=shps)
-        sample["bbox"] = fo.Detections(detections=dts)
+                    shapes.append(shape_detection)
+        
+        # Add all annotations to sample
+        if len(shapes) > 0:
+            sample["shape"] = fo.Detections(detections=shapes)
+        sample["bbox"] = fo.Detections(detections=detections)
         sample.tags = tags
         ds.add_sample(sample)
 
-        if shot > 0 and idx >= shot:
+        # Check if we've reached the maximum number of samples
+        if max_samples and idx >= max_samples:
             break
-        if idx > 10 and debug:
+        if debug and idx > 10:
             break
 
+# Launch FiftyOne app
+print(f"\n{'='*50}")
+print(f"Loading dataset: {dataset_name}")
+print(f"Total samples: {len(ds)}")
+print(f"{'='*50}\n")
 
-print(f"to start app: {dn}")
-session = fo.launch_app(ds, port=5151)  # Local app on port 5151, will auto-open browser
-print(f"started app: {dn}")
+print("Launching FiftyOne app...")
+session = fo.launch_app(ds, port=5151)  # Local app on port 5151
+print(f"✓ App launched successfully!")
+print(f"✓ Open your browser and navigate to: http://localhost:5151")
+print(f"\nPress Ctrl+C to stop the app...")
+
+# Keep the app running
 session.wait()
