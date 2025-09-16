@@ -9,6 +9,7 @@ from datetime import datetime
 from pycocotools import mask as coco_mask
 from dino_any_percept_api import DetectionAPI
 import math
+from common import VisualizationUtils, GeometryUtils, MaskUtils, COCOUtils, HoleProcessingUtils, VideoUtils
 
 class VideoProcessor:
     def __init__(self, video_path, output_dir="data", frame_rate=0.5, crop_top_half=True, detect_objects=True, max_frames=None, start_frame=0):
@@ -196,9 +197,9 @@ class VideoProcessor:
         
         # 保存COCO标注文件
         if self.detect_objects:
-            self._save_coco_annotations()
+            COCOUtils.save_coco_annotations(self.coco_data, self.ann_dir, self.video_name)
             # 生成可视化视频
-            self._create_visualization_video()
+            VideoUtils.create_visualization_video(self.vis_dir, self.video_name, self.target_fps)
         
         end_time = time.time()
         processing_time = end_time - start_time
@@ -243,7 +244,7 @@ class VideoProcessor:
                 self._process_detection_results(result, image_id, frame)
             
             # 生成可视化结果
-            self._create_visualization(frame, result, file_path, image_id)
+            VisualizationUtils.create_visualization(frame, result, self.vis_dir, os.path.basename(file_path), self.coco_data, image_id)
             
             return result
             
@@ -356,269 +357,6 @@ class VideoProcessor:
                 self.coco_data['annotations'].append(annotation)
                 self.annotation_id += 1
 
-    def _create_visualization(self, frame, result, file_path, image_id=None):
-        """创建检测和分割的可视化结果，包括affordance和grasp_policy"""
-        try:
-            # 复制原始图像
-            vis_img = frame.copy()
-            
-            if result and 'objects' in result:
-                objects = result.get('objects', [])
-                
-                for obj in objects:
-                    bbox = obj.get('bbox', [])
-                    mask_rle = obj.get('mask', None)
-                    category = obj.get('category', 'unknown').lower()
-                    score = obj.get('score', 0.0)  # 检测API返回的是score字段
-                    
-                    # 改进的配色方案
-                    if 'handle' in category:
-                        # Handle: 使用青色系
-                        mask_color = (255, 200, 0)  # 青色
-                        edge_color = (255, 255, 0)  # 亮青色
-                        bbox_color = (255, 255, 0)  # 黄色边框
-                    else:
-                        # Bag: 使用品红色系
-                        mask_color = (255, 0, 200)  # 品红
-                        edge_color = (255, 0, 255)  # 亮品红
-                        bbox_color = (255, 100, 255)  # 粉色边框
-                    
-                    # 绘制分割掩码（带边缘强调）
-                    if mask_rle:
-                        try:
-                            mask = coco_mask.decode(mask_rle)
-                            
-                            # 1. 绘制半透明掩码
-                            overlay = vis_img.copy()
-                            overlay[mask > 0] = mask_color
-                            alpha = 0.3  # 30%不透明度
-                            vis_img = cv2.addWeighted(vis_img, 1-alpha, overlay, alpha, 0)
-                            
-                            # 2. 绘制掩码边缘轮廓
-                            contours, _ = cv2.findContours(mask.astype(np.uint8), 
-                                                          cv2.RETR_EXTERNAL, 
-                                                          cv2.CHAIN_APPROX_SIMPLE)
-                            cv2.drawContours(vis_img, contours, -1, edge_color, 2)
-                            
-                        except Exception as e:
-                            print(f"绘制掩码时发生错误: {e}")
-                    
-                    # 绘制边界框（改进样式）
-                    if len(bbox) >= 4:
-                        x1, y1, x2, y2 = map(int, bbox[:4])
-                        
-                        # 绘制实线边框（更细）
-                        cv2.rectangle(vis_img, (x1, y1), (x2, y2), bbox_color, 2)
-                        
-                        # 绘制角标记增强
-                        corner_len = 20
-                        thickness = 3
-                        # 左上角
-                        cv2.line(vis_img, (x1, y1), (x1+corner_len, y1), bbox_color, thickness)
-                        cv2.line(vis_img, (x1, y1), (x1, y1+corner_len), bbox_color, thickness)
-                        # 右上角
-                        cv2.line(vis_img, (x2-corner_len, y1), (x2, y1), bbox_color, thickness)
-                        cv2.line(vis_img, (x2, y1), (x2, y1+corner_len), bbox_color, thickness)
-                        # 左下角
-                        cv2.line(vis_img, (x1, y2-corner_len), (x1, y2), bbox_color, thickness)
-                        cv2.line(vis_img, (x1, y2), (x1+corner_len, y2), bbox_color, thickness)
-                        # 右下角
-                        cv2.line(vis_img, (x2, y2-corner_len), (x2, y2), bbox_color, thickness)
-                        cv2.line(vis_img, (x2-corner_len, y2), (x2, y2), bbox_color, thickness)
-                        
-                        # 绘制标签（改进样式）- 增加面积显示
-                        bbox_area = (x2 - x1) * (y2 - y1)
-                        label = f"{category} {score:.2f} A:{bbox_area:.0f}"
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        font_scale = 0.7
-                        thickness = 2
-                        label_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
-                        
-                        # 标签位置（在框上方或下方）
-                        label_y = y1 - 10 if y1 > 30 else y2 + 25
-                        
-                        # 绘制标签背景（半透明黑色）
-                        overlay = vis_img.copy()
-                        cv2.rectangle(overlay, 
-                                    (x1, label_y - label_size[1] - 8),
-                                    (x1 + label_size[0] + 10, label_y + 3),
-                                    (0, 0, 0), -1)
-                        vis_img = cv2.addWeighted(vis_img, 0.7, overlay, 0.3, 0)
-                        
-                        # 绘制标签文字
-                        cv2.putText(vis_img, label, (x1 + 5, label_y - 2),
-                                   font, font_scale, (255, 255, 255), thickness)
-            
-            # 如果提供了image_id，查找对应的标注并绘制affordance
-            if image_id is not None:
-                self._draw_affordance_and_policy(vis_img, image_id)
-            
-            # 保存可视化结果
-            vis_path = os.path.join(self.vis_dir, f"vis_{os.path.basename(file_path)}")
-            cv2.imwrite(vis_path, vis_img)
-            
-        except Exception as e:
-            print(f"创建可视化时发生错误: {e}")
-
-    def _draw_affordance_and_policy(self, vis_img, image_id):
-        """在图像上绘制affordance、grasp_policy和IoU信息，根据affordance类型进行可视化"""
-        try:
-            # 查找该图像的所有标注
-            image_annotations = [ann for ann in self.coco_data['annotations'] 
-                               if ann['image_id'] == image_id]
-            
-            for ann in image_annotations:
-                affordances = ann.get('affordance', [])  # 现在是list of lists
-                grasp_policy = ann.get('grasp_policy', 'no')
-                segmentation = ann.get('segmentation', None)
-                handle_hole = ann.get('handle_hole', None)  # 获取handle_hole信息
-                
-                # 为多个affordance使用不同颜色
-                colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
-                text_thickness = 4  # 加粗文字
-                
-                # 遍历所有affordances
-                for aff_idx, affordance in enumerate(affordances):
-                    if not affordance:  # 跳过空affordance
-                        continue
-                        
-                    # 为每个affordance分配颜色
-                    color = colors[aff_idx % len(colors)]
-                    
-                    # 计算affordance形状与mask的IoU
-                    iou_value = 0.0
-                    if segmentation and isinstance(segmentation, dict) and 'counts' in segmentation:
-                        try:
-                            mask = coco_mask.decode(segmentation)
-                            # 确保mask是连续的numpy数组
-                            mask = np.ascontiguousarray(mask, dtype=np.uint8)
-                            
-                            if len(affordance) == 3:  # circle类型
-                                x, y, radius = affordance
-                                # 创建圆形mask
-                                affordance_mask = np.zeros(mask.shape, dtype=np.uint8)
-                                cv2.circle(affordance_mask, (int(x), int(y)), int(radius), 1, -1)
-                                # 计算IoU
-                                iou_value = self._calculate_iou(mask, affordance_mask)
-                                
-                            elif len(affordance) >= 5:  # rot_bbox类型
-                                xc, yc, w, h, angle = affordance
-                                # 创建旋转矩形mask
-                                affordance_mask = np.zeros(mask.shape, dtype=np.uint8)
-                                rect = ((float(xc), float(yc)), (float(w), float(h)), float(angle)*180/math.pi)
-                                box_points = cv2.boxPoints(rect).astype(int)
-                                cv2.drawContours(affordance_mask, [box_points], 0, 1, -1)
-                                # 计算IoU
-                                iou_value = self._calculate_iou(mask, affordance_mask)
-                        except Exception as e:
-                            print(f"计算IoU时发生错误: {e}")
-                    
-                    # 根据affordance类型进行可视化
-                    if len(affordance) == 3:  # circle类型 [x, y, radius]
-                        x, y, radius = affordance
-                        
-                        # 绘制圆形（使用分配的颜色，加粗）
-                        cv2.circle(vis_img, (int(x), int(y)), int(radius), color, 5)
-                        
-                        # 绘制中心点（使用分配的颜色）
-                        cv2.circle(vis_img, (int(x), int(y)), 5, color, -1)
-                        
-                        # 显示affordance编号和参数（使用分配的颜色，加粗）
-                        aff_text = f"Aff{aff_idx+1}: Circle({x:.1f},{y:.1f},r={radius:.1f})"
-                        text_y = int(y) + 35 * aff_idx  # 垂直偏移避免重叠
-                        cv2.putText(vis_img, aff_text, (int(x) + 10, text_y), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, text_thickness)
-                        
-                        # 显示IoU值（使用分配的颜色，加粗）
-                        iou_text = f"IoU: {iou_value:.3f}"
-                        cv2.putText(vis_img, iou_text, (int(x) + 10, text_y + 25), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, text_thickness)
-                        
-                    elif len(affordance) >= 5:  # rot_bbox类型 [xc, yc, w, h, angle]
-                        xc, yc, w, h, angle = affordance
-                        
-                        # 创建旋转矩形
-                        rect = ((float(xc), float(yc)), (float(w), float(h)), float(angle)*180/math.pi)
-                        box_points = cv2.boxPoints(rect).astype(int)
-                        
-                        # 绘制旋转矩形（使用分配的颜色，加粗）
-                        cv2.drawContours(vis_img, [box_points], 0, color, 5)
-                        
-                        # 绘制中心点（使用分配的颜色）
-                        cv2.circle(vis_img, (int(xc), int(yc)), 5, color, -1)
-                        
-                        # 显示affordance编号和参数（使用分配的颜色，加粗）
-                        aff_text = f"Aff{aff_idx+1}: RotBox({xc:.1f},{yc:.1f},{w:.1f}x{h:.1f},θ={angle:.2f})"
-                        text_y = int(yc) + 35 * aff_idx  # 垂直偏移避免重叠
-                        cv2.putText(vis_img, aff_text, (int(xc) + 10, text_y), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, text_thickness)
-                        
-                        # 显示IoU值（使用分配的颜色，加粗）
-                        iou_text = f"IoU: {iou_value:.3f}"
-                        cv2.putText(vis_img, iou_text, (int(xc) + 10, text_y + 25), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, text_thickness)
-                
-                # 绘制handle_hole圆形（如果存在）
-                if handle_hole and len(handle_hole) == 3:
-                    hh_x, hh_y, hh_radius = handle_hole
-                    
-                    # 使用橙色绘制handle_hole
-                    hh_color = (0, 165, 255)  # 橙色 (BGR格式)
-                    
-                    # 绘制圆形轮廓
-                    cv2.circle(vis_img, (int(hh_x), int(hh_y)), int(hh_radius), hh_color, 3)
-                    
-                    # 绘制中心点
-                    cv2.circle(vis_img, (int(hh_x), int(hh_y)), 5, hh_color, -1)
-                    
-                    # 绘制标签
-                    hh_text = f"Handle_Hole: ({hh_x:.1f},{hh_y:.1f},r={hh_radius:.1f})"
-                    cv2.putText(vis_img, hh_text, (int(hh_x) + 15, int(hh_y) - 20), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, hh_color, text_thickness)
-                
-                # 绘制rot_bbox_bag（如果存在）
-                rot_bbox_bag = ann.get('rot_bbox_bag', None)
-                if rot_bbox_bag and len(rot_bbox_bag) == 5:
-                    bag_cx, bag_cy, bag_w, bag_h, bag_angle = rot_bbox_bag
-                    
-                    # 使用紫色绘制rot_bbox_bag
-                    bag_color = (128, 0, 128)  # 紫色 (BGR格式)
-                    
-                    # 创建旋转矩形
-                    rect = ((float(bag_cx), float(bag_cy)), (float(bag_w), float(bag_h)), float(bag_angle)*180/math.pi)
-                    box_points = cv2.boxPoints(rect).astype(int)
-                    
-                    # 绘制旋转矩形轮廓（虚线效果：使用较细的线条）
-                    cv2.drawContours(vis_img, [box_points], 0, bag_color, 2)
-                    
-                    # 绘制中心点
-                    cv2.circle(vis_img, (int(bag_cx), int(bag_cy)), 3, bag_color, -1)
-                    
-                    # 绘制标签
-                    bag_text = f"Bag_RotBox: ({bag_cx:.1f},{bag_cy:.1f},{bag_w:.1f}x{bag_h:.1f},θ={bag_angle:.2f})"
-                    cv2.putText(vis_img, bag_text, (int(bag_cx) + 15, int(bag_cy) - 40), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, bag_color, 2)
-                
-                # 在所有affordance绘制完后，显示grasp_policy信息（在合适的位置）
-                if affordances:  # 如果有affordance才显示policy
-                    # 找到第一个非空affordance的位置来显示policy
-                    first_affordance = next((aff for aff in affordances if aff), None)
-                    if first_affordance:
-                        if len(first_affordance) >= 2:  # 确保有坐标
-                            policy_x, policy_y = int(first_affordance[0]), int(first_affordance[1])
-                            policy_text = f"Policy: {grasp_policy} ({len(affordances)} affordances)"
-                            cv2.putText(vis_img, policy_text, (policy_x + 10, policy_y - 15), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), text_thickness)
-                elif handle_hole and len(handle_hole) == 3:
-                    # 如果没有affordance但有handle_hole，在handle_hole位置显示policy
-                    hh_x, hh_y = handle_hole[0], handle_hole[1]
-                    policy_text = f"Policy: {grasp_policy} (handle_hole only)"
-                    cv2.putText(vis_img, policy_text, (int(hh_x) + 10, int(hh_y) + 40), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), text_thickness)
-                
-                    
-        except Exception as e:
-            print(f"绘制affordance时发生错误: {e}")
 
     def _get_grasp_policy_from_filename(self):
         """根据视频文件名确定grasp_policy"""
@@ -806,48 +544,9 @@ class VideoProcessor:
             # 寻找洞（holes）- 使用轮廓层次结构检测内部轮廓
             h, w = mask.shape
             
-            # 渐进式形态学操作：先膨胀后腐蚀（开操作的逆操作），更适合检测内部孔洞
-            mask_processed = None
-            optimal_kernel_size = 5
-            area_threshold = 3000  # 孔洞面积阈值
-            
-            for kernel_size in range(5, 50, 2):  # 从5开始，步长2，最大到49
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-                # 先膨胀：扩大mask，连接断裂的孔洞边缘
-                temp_mask = cv2.dilate(mask.astype(np.uint8), kernel, iterations=1)
-                # 后腐蚀：恢复原始大小，但保持孔洞的连接
-                temp_mask = cv2.erode(temp_mask, (5,5), iterations=1)
-                
-                # 检测孔洞
-                temp_contours, temp_hierarchy = cv2.findContours(temp_mask, 
-                                                                cv2.RETR_TREE, 
-                                                                cv2.CHAIN_APPROX_SIMPLE)
-                
-                # 查找内部轮廓（孔洞）并检查面积
-                has_large_hole = False
-                if temp_hierarchy is not None:
-                    temp_hierarchy = temp_hierarchy[0]
-                    for i, contour in enumerate(temp_contours):
-                        # 如果是内部轮廓（有父轮廓）
-                        if temp_hierarchy[i][3] != -1:
-                            area = cv2.contourArea(contour)
-                            if area > area_threshold:
-                                has_large_hole = True
-                                break
-                
-                # 如果找到足够大的孔洞，使用当前结果
-                if has_large_hole:
-                    mask_processed = temp_mask
-                    optimal_kernel_size = kernel_size
-                    break
-            
-            # 如果没有找到足够大的孔洞，使用最大kernel的结果
-            if mask_processed is None:
-                optimal_kernel_size = 25
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (optimal_kernel_size, optimal_kernel_size))
-                # 同样使用膨胀-腐蚀策略
-                mask_processed = cv2.dilate(mask.astype(np.uint8), kernel, iterations=1)
-                mask_processed = cv2.erode(mask_processed, kernel, iterations=1)
+            # 使用HoleProcessingUtils进行渐进式孔洞检测
+            mask_processed, optimal_kernel_size, has_large_hole = HoleProcessingUtils.detect_holes_progressive(
+                mask, area_threshold=3000, max_kernel_size=49)
             
             # 用小kernel开操作去除噪点
             open_kernel_size = max(3, optimal_kernel_size // 5)
@@ -857,32 +556,14 @@ class VideoProcessor:
             
             print(f"BF策略：渐进式预处理 - 最优膨胀-腐蚀kernel={optimal_kernel_size}, 开操作kernel={open_kernel_size}")
             
-            # 找到所有轮廓（包括内部和外部）
-            contours_all, hierarchy = cv2.findContours(mask_processed, 
-                                                      cv2.RETR_TREE,  # 检测所有轮廓和层次结构
-                                                      cv2.CHAIN_APPROX_SIMPLE)
-            
-            # 创建洞的mask - 确保是uint8类型和连续内存
-            holes_mask = np.zeros(mask.shape, dtype=np.uint8)
-            holes_mask = np.ascontiguousarray(holes_mask)
-            hole_contours = []
-            
-            # 遍历轮廓，找到内部轮廓（洞）
-            if hierarchy is not None:
-                hierarchy = hierarchy[0]
-                for i, contour in enumerate(contours_all):
-                    # 如果轮廓有父轮廓，说明它是内部轮廓（洞）
-                    if hierarchy[i][3] != -1:  # parent index != -1
-                        # 确保holes_mask是正确的数据类型和连续内存
-                        holes_mask = np.ascontiguousarray(holes_mask, dtype=np.uint8)
-                        cv2.drawContours(holes_mask, [contour], -1, 255, -1)
-                        hole_contours.append(contour)
+            # 使用HoleProcessingUtils提取孔洞轮廓
+            hole_contours, holes_mask = HoleProcessingUtils.extract_hole_contours(mask_processed)
             
             # 可视化hole_contours - 保存原始检测到的洞（默认关闭）
             if hole_contours:
                 # frame_id = image_id - 1 if image_id else 0  # image_id是1-based，转换为0-based的frame_id
                 # # 使用原始mask进行可视化，但hole_contours是从处理后的mask中提取的
-                # self._visualize_hole_contours(frame, mask, hole_contours, bag_bbox, frame_id)
+                # HoleProcessingUtils.visualize_hole_contours(frame, mask, hole_contours, self.vis_dir, self.video_name, frame_id, bag_bbox)
                 print(f"BF策略：检测到{len(hole_contours)}个孔洞轮廓")
             else:
                 print(f"BF策略：预处理后仍未检测到孔洞轮廓")
@@ -1097,7 +778,7 @@ class VideoProcessor:
             rect_points = cv2.boxPoints(rect).astype(int)
             cv2.drawContours(guess_mask, [rect_points], -1, 255, -1)
             
-            iou = self._calculate_iou(mask, guess_mask)
+            iou = GeometryUtils.calculate_iou(mask, guess_mask)
             
             return {
                 'name': 'rot_bbox',
@@ -1123,7 +804,7 @@ class VideoProcessor:
             
             cv2.circle(guess_mask, (int(x), int(y)), int(radius), 255, -1)
             
-            iou = self._calculate_iou(mask, guess_mask)
+            iou = GeometryUtils.calculate_iou(mask, guess_mask)
             
             return {
                 'name': 'circle',
@@ -1135,78 +816,7 @@ class VideoProcessor:
             print(f"计算circle affordance时发生错误: {e}")
             return None
 
-    def _calculate_iou(self, mask1, mask2):
-        """计算两个二值掩码之间的IoU"""
-        intersection = np.logical_and(mask1, mask2)
-        union = np.logical_or(mask1, mask2)
-        iou = np.sum(intersection) / np.sum(union)
-        return float(iou)
 
-    def _calculate_rotated_bbox_intersection_ratio(self, affordance, bbox):
-        """
-        计算旋转bbox(affordance)与普通bbox的交集面积与affordance面积的比例
-        
-        Args:
-            affordance: [xc, yc, w, h, angle] 旋转矩形
-            bbox: [x1, y1, x2, y2] 普通矩形
-            
-        Returns:
-            ratio: 交集面积 / affordance面积
-        """
-        if bbox is None:
-            return 0.0
-            
-        # 创建affordance的旋转矩形
-        aff_center = (affordance[0], affordance[1])
-        aff_size = (affordance[2], affordance[3])
-        aff_angle = math.degrees(affordance[4])  # 转换为度数
-        
-        # 获取旋转矩形的四个顶点
-        aff_rect = (aff_center, aff_size, aff_angle)
-        aff_points = cv2.boxPoints(aff_rect)
-        
-        # 创建普通bbox的四个顶点
-        bbox_points = np.array([
-            [bbox[0], bbox[1]],  # 左上
-            [bbox[2], bbox[1]],  # 右上
-            [bbox[2], bbox[3]],  # 右下
-            [bbox[0], bbox[3]]   # 左下
-        ], dtype=np.float32)
-        
-        # 使用cv2计算两个多边形的交集
-        try:
-            intersection_area = cv2.intersectConvexConvex(aff_points, bbox_points)[0]
-            affordance_area = affordance[2] * affordance[3]  # w * h
-            
-            if affordance_area > 0:
-                ratio = intersection_area / affordance_area
-                return float(ratio)
-            else:
-                return 0.0
-        except:
-            # 如果cv2.intersectConvexConvex失败，使用backup方法
-            return self._calculate_polygon_intersection_ratio_backup(aff_points, bbox_points, affordance[2] * affordance[3])
-
-    def _calculate_polygon_intersection_ratio_backup(self, poly1_points, poly2_points, poly1_area):
-        """
-        备用的多边形交集计算方法
-        """
-        try:
-            from shapely.geometry import Polygon
-            
-            poly1 = Polygon(poly1_points)
-            poly2 = Polygon(poly2_points)
-            
-            intersection = poly1.intersection(poly2)
-            intersection_area = intersection.area
-            
-            if poly1_area > 0:
-                return float(intersection_area / poly1_area)
-            else:
-                return 0.0
-        except:
-            # 如果shapely也不可用，返回保守估计
-            return 0.0
     
     def _optimize_affordance_with_circle_mask_intersection(self, circle_center, circle_radius, mask, bag_bbox=None, fixed_width=38.0):
         """
@@ -1342,7 +952,9 @@ class VideoProcessor:
                 
                 # 检查射线与所有edge1方向边的交点
                 for p1, p2 in ev1_edges:
-                    intersect = self._line_intersect(circle_center_array, ray_end, p1, p2)
+                    intersect = GeometryUtils.line_intersect(circle_center_array, ray_end, p1, p2)
+                    if intersect is not None:
+                        intersect = np.array(intersect)
                     if intersect is not None:
                         # 检查交点是否在射线的正方向上
                         to_intersect = intersect - circle_center_array
@@ -1444,7 +1056,7 @@ class VideoProcessor:
             
             # 过滤：如果affordance和bbox的交集/affordance > 80%，返回空
             if bag_bbox is not None:
-                intersection_ratio = self._calculate_rotated_bbox_intersection_ratio(affordance, bag_bbox)
+                intersection_ratio = GeometryUtils.calculate_rotated_bbox_intersection_ratio(affordance, bag_bbox)
                 print(f"affordance与bbox交集比例: {intersection_ratio:.1%}")
                 if intersection_ratio > 0.8:
                     print(f"affordance与bbox交集比例过高(>{0.8:.1%})，返回空")
@@ -1458,338 +1070,7 @@ class VideoProcessor:
             traceback.print_exc()
             return None, None
     
-    def _line_intersect(self, p1, p2, p3, p4):
-        """
-        计算两条线段的交点
-        
-        Args:
-            p1, p2: 第一条线段的两个端点
-            p3, p4: 第二条线段的两个端点
-            
-        Returns:
-            交点坐标 [x, y] 或 None（如果不相交）
-        """
-        try:
-            x1, y1 = p1
-            x2, y2 = p2
-            x3, y3 = p3
-            x4, y4 = p4
-            
-            # 计算分母
-            denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-            if abs(denom) < 1e-10:  # 线段平行
-                return None
-            
-            # 计算交点参数
-            t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
-            u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
-            
-            # 检查交点是否在两条线段上
-            if 0 <= t <= 1 and 0 <= u <= 1:
-                # 计算交点坐标
-                ix = x1 + t * (x2 - x1)
-                iy = y1 + t * (y2 - y1)
-                return np.array([ix, iy])
-            
-            return None
-            
-        except Exception:
-            return None
-    
-    def _visualize_hole_contours(self, frame, mask, hole_contours, bag_bbox, frame_id=0):
-        """可视化hole_contours并保存
-        
-        Args:
-            frame: 原始图像
-            mask: bag的掩码
-            hole_contours: 检测到的孔洞轮廓列表
-            bag_bbox: bag的边界框
-            frame_id: 帧编号
-        """
-        try:
-            import matplotlib.pyplot as plt
-            from datetime import datetime
-            import random
-            
-            # 创建可视化图
-            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-            
-            # 1. 原始图像
-            axes[0, 0].imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            axes[0, 0].set_title('Original Image')
-            axes[0, 0].axis('off')
-            
-            # 2. Bag Mask与孔洞叠加
-            mask_overlay = cv2.cvtColor(mask * 255, cv2.COLOR_GRAY2BGR)
-            # 在mask上用红色标记孔洞区域
-            holes_temp = np.zeros(mask.shape, dtype=np.uint8)
-            holes_temp = np.ascontiguousarray(holes_temp)
-            for contour in hole_contours:
-                cv2.drawContours(holes_temp, [contour], -1, 255, -1)
-            mask_overlay[holes_temp > 0] = [255, 0, 0]  # 红色标记孔洞
-            axes[0, 1].imshow(cv2.cvtColor(mask_overlay, cv2.COLOR_BGR2RGB))
-            axes[0, 1].set_title(f'Bag Mask with Holes (red)')
-            axes[0, 1].axis('off')
-            
-            # 3. 检测到的holes（原始）
-            holes_vis = np.zeros(mask.shape, dtype=np.uint8)
-            holes_vis = np.ascontiguousarray(holes_vis)
-            for i, contour in enumerate(hole_contours):
-                cv2.drawContours(holes_vis, [contour], -1, 255, -1)
-            axes[0, 2].imshow(holes_vis, cmap='hot')
-            axes[0, 2].set_title(f'Detected Holes (count: {len(hole_contours)})')
-            axes[0, 2].axis('off')
-            
-            # 4. 各个hole的轮廓
-            contour_vis = cv2.cvtColor(mask * 255, cv2.COLOR_GRAY2BGR)
-            colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
-            hole_info = []  # 存储每个孔洞的信息
-            for i, contour in enumerate(hole_contours):
-                color = colors[i % len(colors)]
-                cv2.drawContours(contour_vis, [contour], -1, color, 2)
-                # 计算轮廓中心和面积
-                M = cv2.moments(contour)
-                area = cv2.contourArea(contour)
-                hole_info.append(f"Hole {i}: area={area:.0f}")
-                if M["m00"] != 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
-                    cv2.putText(contour_vis, f"{i}", (cx-10, cy+5), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-            axes[1, 0].imshow(cv2.cvtColor(contour_vis, cv2.COLOR_BGR2RGB))
-            info_text = ', '.join(hole_info[:3])  # 显示前3个孔洞信息
-            if len(hole_info) > 3:
-                info_text += f', ... ({len(hole_info)} total)'
-            axes[1, 0].set_title(f'Contours: {info_text}')
-            axes[1, 0].axis('off')
-            
-            # 5. 最大的hole
-            if hole_contours:
-                largest_hole = max(hole_contours, key=cv2.contourArea)
-                largest_vis = np.zeros(mask.shape, dtype=np.uint8)
-                largest_vis = np.ascontiguousarray(largest_vis)
-                cv2.drawContours(largest_vis, [largest_hole], -1, 255, -1)
-                axes[1, 1].imshow(largest_vis, cmap='hot')
-                area = cv2.contourArea(largest_hole)
-                # 计算孔洞占mask的比例
-                mask_area = np.sum(mask > 0)
-                ratio = area / mask_area if mask_area > 0 else 0
-                axes[1, 1].set_title(f'Largest Hole (area: {area:.0f}, ratio: {ratio:.3f})')
-                axes[1, 1].axis('off')
-                
-                # 6. 最大hole的圆形拟合
-                (cx, cy), radius = cv2.minEnclosingCircle(largest_hole)
-                circle_vis = frame.copy()
-                # 绘制圆形
-                cv2.circle(circle_vis, (int(cx), int(cy)), int(radius), (0, 255, 255), 3)
-                cv2.circle(circle_vis, (int(cx), int(cy)), 5, (0, 255, 255), -1)
-                # 添加文字标注
-                cv2.putText(circle_vis, f"r={radius:.1f}", 
-                           (int(cx-radius), int(cy-radius-10)),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                axes[1, 2].imshow(cv2.cvtColor(circle_vis, cv2.COLOR_BGR2RGB))
-                axes[1, 2].set_title(f'Circle Fit (center: ({cx:.0f},{cy:.0f}), r: {radius:.1f})')
-                axes[1, 2].axis('off')
-            else:
-                axes[1, 1].text(0.5, 0.5, 'No holes detected', 
-                              ha='center', va='center', transform=axes[1, 1].transAxes)
-                axes[1, 1].axis('off')
-                axes[1, 2].axis('off')
-            
-            # 设置总标题
-            frame_str = f"frame_{frame_id:06d}"
-            plt.suptitle(f'Hole Contours - {self.video_name} - {frame_str}', fontsize=14, fontweight='bold')
-            plt.tight_layout()
-            
-            # 生成文件名 - 格式: vis_hc_{video_name}_frame_{frame_id}_{random}.png
-            # 使用4位随机数避免重复
-            random_suffix = random.randint(1000, 9999)
-            vis_filename = f"vis_hc_{self.video_name}_{frame_str}_{random_suffix}.png"
-            vis_path = os.path.join(self.vis_dir, vis_filename)
-            
-            plt.savefig(vis_path, dpi=100, bbox_inches='tight')
-            plt.close()
-            
-            print(f"  Hole contours可视化已保存: {vis_filename}")
-            
-        except Exception as e:
-            print(f"  可视化hole_contours时发生错误: {e}")
 
-
-    def _create_visualization_video(self):
-        """将vis目录下的所有图像合并成mp4视频"""
-        try:
-            import glob
-            import re
-            
-            # 获取所有vis图像
-            vis_pattern = os.path.join(self.vis_dir, f"vis_{self.video_name}_frame_*.jpg")
-            vis_files = glob.glob(vis_pattern)
-            
-            if not vis_files:
-                print(f"未找到可视化图像文件: {vis_pattern}")
-                return
-            
-            # 按帧编号排序
-            def get_frame_number(filepath):
-                match = re.search(r'frame_(\d+)', filepath)
-                return int(match.group(1)) if match else 0
-            
-            vis_files.sort(key=get_frame_number)
-            
-            print(f"\n生成可视化视频...")
-            print(f"  找到 {len(vis_files)} 个可视化图像")
-            
-            # 读取第一张图像获取尺寸
-            first_img = cv2.imread(vis_files[0])
-            if first_img is None:
-                print(f"无法读取图像: {vis_files[0]}")
-                return
-            
-            height, width = first_img.shape[:2]
-            
-            # 调整帧率：确保不会太低导致编码问题
-            adjusted_fps = max(1.0, self.target_fps)  # 最低1fps
-            if adjusted_fps != self.target_fps:
-                print(f"  调整帧率: {self.target_fps:.2f} -> {adjusted_fps:.2f}")
-            
-            # 尝试多种编码器和格式 - 优先MP4
-            codecs_to_try = [
-                ('mp4v', 'mp4'),
-                ('H264', 'mp4'),
-                ('avc1', 'mp4'),
-                ('XVID', 'avi'),
-                ('MJPG', 'avi'),
-            ]
-            
-            output_path = None
-            out = None
-            
-            for codec, ext in codecs_to_try:
-                try:
-                    temp_output_path = os.path.join(self.vis_dir, f"{self.video_name}_visualization.{ext}")
-                    fourcc = cv2.VideoWriter_fourcc(*codec)
-                    temp_out = cv2.VideoWriter(temp_output_path, fourcc, adjusted_fps, (width, height))
-                    
-                    if temp_out.isOpened():
-                        output_path = temp_output_path
-                        out = temp_out
-                        print(f"  使用编码器: {codec}, 输出格式: {ext}")
-                        break
-                    else:
-                        temp_out.release()
-                        
-                except Exception as e:
-                    print(f"  编码器 {codec} 测试失败: {e}")
-            
-            if out is None or not out.isOpened():
-                print(f"  无法创建视频写入器，尝试的编码器: {[c for c, _ in codecs_to_try]}")
-                return
-            
-            # 写入所有帧
-            frame_written = 0
-            for vis_file in vis_files:
-                img = cv2.imread(vis_file)
-                if img is not None:
-                    # 检查尺寸一致性
-                    h, w = img.shape[:2]
-                    if (w, h) != (width, height):
-                        img = cv2.resize(img, (width, height))
-                    
-                    out.write(img)
-                    frame_written += 1
-                    if frame_written % 10 == 0:
-                        print(f"  已处理 {frame_written}/{len(vis_files)} 帧...")
-                else:
-                    print(f"  警告: 无法读取图像 {vis_file}")
-            
-            # 释放视频写入器
-            out.release()
-            
-            # 获取输出文件大小
-            if os.path.exists(output_path):
-                file_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
-                
-                # 验证生成的视频
-                test_cap = cv2.VideoCapture(output_path)
-                if test_cap.isOpened():
-                    frame_count = int(test_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    fps = test_cap.get(cv2.CAP_PROP_FPS)
-                    test_cap.release()
-                    print(f"  可视化视频已生成: {output_path}")
-                    print(f"  视频信息: {width}x{height}, {fps:.2f}fps, {frame_count}帧, {file_size:.2f}MB")
-                else:
-                    print(f"  警告: 视频文件生成但无法验证")
-            else:
-                print(f"  视频生成失败")
-                
-        except Exception as e:
-            print(f"生成可视化视频时发生错误: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _save_coco_annotations(self):
-        """保存COCO格式标注文件，按8:2比例分割为train.json和val.json"""
-        if not self.coco_data['images']:
-            return
-     
-        # 获取所有图像ID
-        image_ids = [img['id'] for img in self.coco_data['images']]
-        
-        # 按8:2比例分割
-        split_idx = int(len(image_ids) * 0.8)
-        train_image_ids = set(image_ids[:split_idx])
-        val_image_ids = set(image_ids[split_idx:])
-        
-        # 创建训练集和验证集数据
-        train_data = {
-            'info': self.coco_data['info'],
-            'licenses': self.coco_data['licenses'],
-            'categories': self.coco_data['categories'],
-            'images': [],
-            'annotations': []
-        }
-        
-        val_data = {
-            'info': self.coco_data['info'],
-            'licenses': self.coco_data['licenses'],
-            'categories': self.coco_data['categories'],
-            'images': [],
-            'annotations': []
-        }
-        
-        # 分割图像数据
-        for img in self.coco_data['images']:
-            if img['id'] in train_image_ids:
-                train_data['images'].append(img)
-            else:
-                val_data['images'].append(img)
-        
-        # 分割标注数据
-        for ann in self.coco_data['annotations']:
-            if ann['image_id'] in train_image_ids:
-                train_data['annotations'].append(ann)
-            else:
-                val_data['annotations'].append(ann)
-        
-        # 保存训练集
-        train_path = os.path.join(self.ann_dir, 'train.json')
-        with open(train_path, 'w', encoding='utf-8') as f:
-            json.dump(train_data, f, indent=2, ensure_ascii=False)
-        
-        # 保存验证集
-        val_path = os.path.join(self.ann_dir, 'val.json')
-        with open(val_path, 'w', encoding='utf-8') as f:
-            json.dump(val_data, f, indent=2, ensure_ascii=False)
-        
-        # 也保存完整的标注文件（可选）
-        full_path = os.path.join(self.ann_dir, f"{self.video_name}.json")
-        with open(full_path, 'w', encoding='utf-8') as f:
-            json.dump(self.coco_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"训练集标注文件已保存: {train_path} ({len(train_data['images'])} 张图像, {len(train_data['annotations'])} 个标注)")
-        print(f"验证集标注文件已保存: {val_path} ({len(val_data['images'])} 张图像, {len(val_data['annotations'])} 个标注)")
-        print(f"完整标注文件已保存: {full_path} ({len(self.coco_data['images'])} 张图像, {len(self.coco_data['annotations'])} 个标注)")
 
     def get_frame_info(self):
         """

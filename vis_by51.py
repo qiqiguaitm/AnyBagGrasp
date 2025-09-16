@@ -9,12 +9,9 @@ from pycocotools.coco import COCO
 debug = False
 
 
-fp = r"ann2/val.C2.mo.rle.shape.json"
-fp = "ann2/val.C2.mo.rle.shape.fs.aligned.json"
-fp = r"ann2/grasp_shot1k.coco.rle.C100.json"
-fp = r"ann3/all_s100.shape.rbc0.75.fix.json"
-fp = r"ann3/val.C100.json"
+
 fp = r"data/bag/0912/anno/backfront_01.json"
+fp = r"data/bag/0915_layerbags/anno/backfront_grasp01.json"
 # fp = r"/comp_robot/dino-3D/grasp/Grasp-Anything/ann3/all_s100.shape.rbc0.75.rbc0.75.fix.json"
 
 data_root='data'
