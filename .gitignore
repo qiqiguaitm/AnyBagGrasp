@@ -1,47 +1,63 @@
-# Data directory
-data/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
 
-# Image files
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.bmp
-*.tiff
-*.webp
+# Model files
+*.ckpt
+*.pt
+*.pth
+*.pkl
+*.h5
+*.pb
+*.onnx
+*.safetensors
+*.bin
 
-# Video files
+# Data files
+*.npy
+*.npz
+*.mat
+
+# Media files
 *.mp4
 *.avi
 *.mov
-*.mkv
-*.wmv
-*.flv
-*.webm
+*.jpg
+*.jpeg
+*.png
+*.bmp
 
-# Data files
-*.json
-*.csv
-*.xml
-*.yaml
-*.yml
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-
-# Logs
+# Directories
+images/
+data/
 log/
-*.log
+samples/
+output/
+checkpoints/
+models/
+weights/
 
-# OS generated files
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Debug files
+*debug*
+test_*.py
