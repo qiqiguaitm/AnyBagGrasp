@@ -1,0 +1,18 @@
+{
+  "ddebe68b3b4df03f5714a422fd0ce64d38a68c4e701197418e15a1084dc37bf5": {
+    "path": ".cache/cdm/dd/ddebe68b3b4df03f5714a422fd0ce64d38a68c4e701197418e15a1084dc37bf5.npz",
+    "created": 1758126684.834259,
+    "last_accessed": 1758126684.834259,
+    "access_count": 1,
+    "size_bytes": 1574287,
+    "rgb_shape": [
+      720,
+      1280,
+      3
+    ],
+    "depth_shape": [
+      720,
+      1280
+    ]
+  }
+}
