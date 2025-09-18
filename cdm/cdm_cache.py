@@ -115,8 +115,8 @@ class CDMCache:
         
         if cache_path.exists():
             try:
-                # 加载缓存数据
-                data = np.load(cache_path)
+                # 加载缓存数据 (允许pickle用于读取metadata)
+                data = np.load(cache_path, allow_pickle=True)
                 enhanced_depth = data['enhanced_depth']
                 metadata = data['metadata'].item()  # .item() 将0维数组转为字典
                 

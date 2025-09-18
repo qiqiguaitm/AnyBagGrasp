@@ -283,7 +283,7 @@ class Affordance4BEVGraspBag:
                     affordance['quality_score'] = 0.0
                     affordance['width_feasible'] = False
                     affordance['rot_bbox'] = None
-                    affordance['aff_rot_bbox'] = None
+                    affordance['aff_rot_bbox'] = []  # 空列表
                     affordance['left_finger'] = None
                     affordance['right_finger'] = None
                     affordance['gripper_body_bbox'] = None
@@ -324,13 +324,8 @@ class Affordance4BEVGraspBag:
         使用检测API检测物体
         """
         if not DETECTION_AVAILABLE or self.detector is None:
-            # 返回模拟检测结果用于测试
-            h, w = rgb_image.shape[:2]
-            return [{
-                'bbox': [w//4, h//4, w//2, h//2],  # [x, y, width, height]
-                'confidence': 0.9,
-                'label': 'bag'
-            }]
+            # 检测不可用时返回空结果
+            return []
         
         # 实际检测 - 使用detect_objects方法
         try:
@@ -364,13 +359,8 @@ class Affordance4BEVGraspBag:
                 return []
         except Exception as e:
             print(f"Detection API error: {e}")
-            # 返回模拟检测结果作为fallback
-            h, w = rgb_image.shape[:2]
-            return [{
-                'bbox': [w//4, h//4, w//2, h//2],  # [x, y, width, height]
-                'confidence': 0.9,
-                'label': 'bag'
-            }]
+            # 异常情况返回空结果
+            return []
     
     def _enhance_depth_with_cdm(self, rgb_image: np.ndarray, depth_raw: np.ndarray) -> np.ndarray:
         """
@@ -662,9 +652,13 @@ class Affordance4BEVGraspBag:
                 
                 # 绘制aff_rot_bbox（红色高亮粗体）- 长80mm，宽19mm的抓取框
                 if aff.get('aff_rot_bbox') is not None:
-                    aff_box = np.array(aff['aff_rot_bbox'], dtype=np.int32)
-                    cv2.drawContours(vis_rgb, [aff_box], 0, (0, 0, 255), 8)  # 红色粗体
-                    cv2.drawContours(vis_depth, [aff_box], 0, (0, 0, 255), 8)
+                    # aff_rot_bbox是list of list，每个元素格式: [cx, cy, w, h, angle]
+                    for arb in aff['aff_rot_bbox']:
+                        rect = ((arb[0], arb[1]), (arb[2], arb[3]), np.degrees(arb[4]))
+                        aff_box = cv2.boxPoints(rect)
+                        aff_box = np.int32(aff_box)
+                        cv2.drawContours(vis_rgb, [aff_box], 0, (0, 0, 255), 8)  # 红色粗体
+                        cv2.drawContours(vis_depth, [aff_box], 0, (0, 0, 255), 8)
             
             # 绘制抓取点和方向（跳过边界区域的affordance）
             if aff.get('grasp_center') is not None and not aff.get('near_boundary', False):
@@ -794,8 +788,12 @@ class Affordance4BEVGraspBag:
             
             # 绘制aff_rot_bbox（红色高亮粗体）
             if affordance.get('aff_rot_bbox'):
-                aff_box = np.array(affordance['aff_rot_bbox'], dtype=np.int32)
-                cv2.drawContours(rgb_vis, [aff_box], 0, (0, 0, 255), 8)  # 红色粗体
+                # aff_rot_bbox是list of list，每个元素格式: [cx, cy, w, h, angle]
+                for arb in affordance['aff_rot_bbox']:
+                    rect = ((arb[0], arb[1]), (arb[2], arb[3]), np.degrees(arb[4]))
+                    aff_box = cv2.boxPoints(rect)
+                    aff_box = np.int32(aff_box)
+                    cv2.drawContours(rgb_vis, [aff_box], 0, (0, 0, 255), 8)  # 红色粗体
             
             # 绘制抓取方向箭头（更明显）
             if affordance.get('grasp_angle') is not None:
@@ -898,7 +896,8 @@ class Affordance4BEVGraspBag:
             'object_width': None,
             'width_feasible': False,
             'depth_at_grasp': None,
-            'method': 'adaptive_width_grasp'
+            'method': 'adaptive_width_grasp',
+            'aff_rot_bbox': []  # 初始化为空列表
         }
         
         # 检查输入有效性
@@ -1028,31 +1027,62 @@ class Affordance4BEVGraspBag:
             aff_length_pixels = aff_length_mm * pixels_per_mm
             aff_width_pixels = aff_width_mm * pixels_per_mm
             
-            # 创建旋转矩形（angle为长度方向）
-            # grasp_angle直接作为aff_rot_bbox的长边方向
-            aff_angle = grasp_angle  # angle作为长边方向
+            # 创建候选旋转矩形列表
+            aff_rot_bbox_list = []
             
-            # 计算旋转矩形的4个顶点
-            cos_a = np.cos(aff_angle)
-            sin_a = np.sin(aff_angle)
+            # 检查是否为plastic bag类别（包含长宽比条件）
+            label_is_plastic = detection.get('label', '').lower() == 'plastic bag'
             
-            # 半长和半宽
-            half_length = aff_length_pixels / 2
-            half_width = aff_width_pixels / 2
+            # 计算bbox的长宽比
+            bbox = detection.get('bbox', [0, 0, 1, 1])  # [x, y, width, height]
+            bbox_width = bbox[2]
+            bbox_height = bbox[3]
+            # 长宽比（取较大值/较小值）
+            aspect_ratio = max(bbox_width, bbox_height) / min(bbox_width, bbox_height) if min(bbox_width, bbox_height) > 0 else 1.0
             
-            # 4个顶点相对于中心的偏移
-            corners_offset = [
-                [-half_length * cos_a - half_width * sin_a, -half_length * sin_a + half_width * cos_a],
-                [half_length * cos_a - half_width * sin_a, half_length * sin_a + half_width * cos_a],
-                [half_length * cos_a + half_width * sin_a, half_length * sin_a - half_width * cos_a],
-                [-half_length * cos_a + half_width * sin_a, -half_length * sin_a - half_width * cos_a]
-            ]
+            # 满足label且长宽比在0.5-2.0之间才认为是plastic bag
+            is_plastic_bag = label_is_plastic and (0.5 < aspect_ratio < 2.0)
             
-            # 加上中心点得到绝对坐标
-            aff_rot_bbox = [[grasp_center[0] + offset[0], grasp_center[1] + offset[1]] 
-                           for offset in corners_offset]
+            if is_plastic_bag:
+                # 对于plastic bag，生成4个候选，每45度一个
+                base_angle = grasp_angle
+                for i in range(4):
+                    candidate_angle = base_angle + i * np.pi / 4  # 每45度一个候选
+                    
+                    # 将角度规范化到 [0, π] 范围
+                    angle_normalized = candidate_angle % (2 * np.pi)
+                    if angle_normalized > np.pi:
+                        angle_normalized = angle_normalized - np.pi
+                    
+                    # 使用 cx, cy, w, h, angle 格式表示
+                    candidate_bbox = [
+                        float(grasp_center[0]),  # cx
+                        float(grasp_center[1]),  # cy
+                        float(aff_length_pixels),  # w (长度)
+                        float(aff_width_pixels),   # h (宽度)
+                        float(angle_normalized)  # angle (0-π)
+                    ]
+                    aff_rot_bbox_list.append(candidate_bbox)
+            else:
+                # 对于其他类别，只生成一个候选
+                aff_angle = grasp_angle
+                
+                # 将角度规范化到 [0, π] 范围
+                aff_angle_normalized = aff_angle % (2 * np.pi)
+                if aff_angle_normalized > np.pi:
+                    aff_angle_normalized = aff_angle_normalized - np.pi
+                
+                # 使用 cx, cy, w, h, angle 格式表示
+                single_bbox = [
+                    float(grasp_center[0]),  # cx
+                    float(grasp_center[1]),  # cy
+                    float(aff_length_pixels),  # w (长度)
+                    float(aff_width_pixels),   # h (宽度)
+                    float(aff_angle_normalized)  # angle (0-π)
+                ]
+                aff_rot_bbox_list.append(single_bbox)
             
-            affordance['aff_rot_bbox'] = aff_rot_bbox
+            affordance['aff_rot_bbox'] = aff_rot_bbox_list
             
         except Exception as e:
             print(f"Error computing affordance: {e}")
