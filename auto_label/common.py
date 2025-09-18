@@ -56,7 +56,16 @@ class VisualizationUtils:
         if len(bbox) < 4:
             return vis_img
             
-        x1, y1, x2, y2 = map(int, bbox[:4])
+        # Handle both [x1, y1, x2, y2] and [x, y, width, height] formats
+        x, y, w_or_x2, h_or_y2 = map(int, bbox[:4])
+        
+        # Check if this is [x, y, width, height] format (width/height typically smaller than coordinates)
+        if w_or_x2 < x or h_or_y2 < y:
+            # This is [x1, y1, x2, y2] format
+            x1, y1, x2, y2 = x, y, w_or_x2, h_or_y2
+        else:
+            # This is [x, y, width, height] format
+            x1, y1, x2, y2 = x, y, x + w_or_x2, y + h_or_y2
         
         # Draw solid border
         cv2.rectangle(vis_img, (x1, y1), (x2, y2), bbox_color, thickness)
@@ -81,7 +90,16 @@ class VisualizationUtils:
     @staticmethod
     def draw_label(vis_img, bbox, category, score, font_scale=0.7, thickness=2):
         """Draw label with background"""
-        x1, y1, x2, y2 = map(int, bbox[:4])
+        # Handle both [x1, y1, x2, y2] and [x, y, width, height] formats
+        x, y, w_or_x2, h_or_y2 = map(int, bbox[:4])
+        
+        # Check if this is [x, y, width, height] format
+        if w_or_x2 < x or h_or_y2 < y:
+            # This is [x1, y1, x2, y2] format
+            x1, y1, x2, y2 = x, y, w_or_x2, h_or_y2
+        else:
+            # This is [x, y, width, height] format
+            x1, y1, x2, y2 = x, y, x + w_or_x2, y + h_or_y2
         
         # Calculate area
         bbox_area = (x2 - x1) * (y2 - y1)

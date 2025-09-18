@@ -232,8 +232,12 @@ def extract_frames_with_fps(video_path, h5_path, output_dir, target_fps=2, max_f
                 print(f"Warning: Could not read RGB frame {i}")
                 continue
             
+            # Store original height for coordinate adjustment
+            original_height = rgb_frame.shape[0]
+            
             # Crop RGB to match depth size (top half)
             rgb_frame = rgb_frame[:720, :, :]
+            crop_offset = original_height - 720  # Amount cropped from bottom
             
             # Get depth frame
             depth_frame = depth_data[i]

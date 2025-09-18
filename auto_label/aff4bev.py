@@ -11,7 +11,6 @@ import numpy as np
 from pathlib import Path
 import time
 from typing import List, Dict, Tuple, Optional, Union
-from scipy.spatial import ConvexHull
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 # 添加必要的路径
@@ -194,6 +193,7 @@ class Affordance4BEVGraspBag:
         
         return results
     
+
     def _process_single(self, rgb_file: Path, depth_file: Path) -> Dict:
         """
         处理单个RGB-深度文件对
@@ -202,7 +202,6 @@ class Affordance4BEVGraspBag:
             'rgb_file': str(rgb_file),
             'depth_file': str(depth_file),
             'detections': [],
-            'hulls': [],
             'affordances': []
         }
         
@@ -253,12 +252,8 @@ class Affordance4BEVGraspBag:
             # 提取目标区域的深度（使用mask如果可用）
             target_depth = self._extract_target_depth_with_mask(cdm_depth, det, idx)
             
-            # 跳过凸包计算
-            hull_result = {'points': [], 'hull': None, 'volume': 0, 'center': None}
-            result['hulls'].append(hull_result)
-            
             # 5. 计算affordance
-            affordance = self._compute_affordance(det, target_depth, hull_result)
+            affordance = self._compute_affordance(det, target_depth)
             
             # 检查affordance中心点是否在边界5%区域内
             if affordance.get('grasp_center'):
@@ -293,14 +288,13 @@ class Affordance4BEVGraspBag:
             
             result['affordances'].append(affordance)
             
-            # 可视化凸包和抓取点
-            vis_path = self._visualize_hull(
-                rgb_image, cdm_depth, det, hull_result, 
+            # 可视化结果
+            vis_path = self._visualize_result(
+                rgb_image, cdm_depth, det, 
                 rgb_file.stem, idx, affordance
             )
             
             if self.verbose:
-                print(f"  Hull points: {len(hull_result.get('points', []))}")
                 if affordance.get('grasp_center') and not affordance.get('near_boundary', False):
                     print(f"  Grasp center: {affordance['grasp_center']}")
                     print(f"  Object width: {affordance.get('object_width', 0):.1f}mm")
@@ -462,63 +456,6 @@ class Affordance4BEVGraspBag:
         
         return target_depth
     
-    def _generate_convex_hull(self, target_depth: np.ndarray, bbox: List[float]) -> Dict:
-        """
-        生成目标的3D凸包
-        
-        Args:
-            target_depth: 目标区域深度
-            bbox: 原始边界框
-            
-        Returns:
-            凸包结果字典
-        """
-        hull_result = {
-            'points': [],
-            'hull': None,
-            'volume': 0,
-            'center': None
-        }
-        
-        # 获取有效深度点
-        valid_mask = target_depth > 0
-        if not np.any(valid_mask):
-            return hull_result
-        
-        # 生成3D点云
-        h, w = target_depth.shape
-        x_offset, y_offset = int(bbox[0]), int(bbox[1])
-        
-        # 创建网格坐标
-        yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-        
-        # 只保留有效深度的点
-        xx_valid = xx[valid_mask] + x_offset
-        yy_valid = yy[valid_mask] + y_offset
-        zz_valid = target_depth[valid_mask] * 1000  # 转换为毫米
-        
-        # 下采样以减少计算量
-        if len(xx_valid) > 1000:
-            indices = np.random.choice(len(xx_valid), 1000, replace=False)
-            xx_valid = xx_valid[indices]
-            yy_valid = yy_valid[indices]
-            zz_valid = zz_valid[indices]
-        
-        # 组合成3D点
-        points = np.column_stack([xx_valid, yy_valid, zz_valid])
-        hull_result['points'] = points
-        
-        # 生成凸包
-        if len(points) >= 4:  # ConvexHull需要至少4个点
-            try:
-                hull = ConvexHull(points)
-                hull_result['hull'] = hull
-                hull_result['volume'] = hull.volume
-                hull_result['center'] = points.mean(axis=0)
-            except Exception as e:
-                print(f"Warning: ConvexHull generation failed: {e}")
-        
-        return hull_result
     
     def _colorize_depth(self, depth: np.ndarray) -> np.ndarray:
         """
@@ -743,8 +680,8 @@ class Affordance4BEVGraspBag:
         if self.verbose:
             print(f"  All results visualization saved: {output_path}")
     
-    def _visualize_hull(self, rgb_image: np.ndarray, depth_image: np.ndarray,
-                       detection: Dict, hull_result: Dict,
+    def _visualize_result(self, rgb_image: np.ndarray, depth_image: np.ndarray,
+                       detection: Dict,
                        frame_name: str, det_idx: int, affordance: Dict = None) -> Path:
         """
         可视化抓取结果
@@ -864,15 +801,13 @@ class Affordance4BEVGraspBag:
         
         return vis_path
     
-    def _compute_affordance(self, detection: Dict, target_depth: np.ndarray, 
-                           hull_result: Dict) -> Dict:
+    def _compute_affordance(self, detection: Dict, target_depth: np.ndarray) -> Dict:
         """
         计算二指夹爪抓取affordance（自适应宽度）
         
         Args:
             detection: 检测结果
             target_depth: 目标深度（米）
-            hull_result: 凸包结果
             
         Returns:
             Affordance字典
@@ -1633,7 +1568,6 @@ def main():
             # 单文件结果
             print(f"\nSummary:")
             print(f"  Detections: {len(results['detections'])}")
-            print(f"  Valid hulls: {sum(1 for h in results['hulls'] if h['hull'] is not None)}")
             print(f"  Affordances: {len(results['affordances'])}")
         else:
             # 多文件结果

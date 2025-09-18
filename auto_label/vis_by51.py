@@ -11,9 +11,10 @@ debug = False
 data_root = 'data'
 
 # Annotation file path - change this to visualize different datasets
-# fp = r"data/bag/0912/anno/backfront_01.json"
-fp = r"data/bag/0915_layerbags/anno/backfront_grasp01.json"
-fp = r"data/bag/0916_backfront_val/anno/backfront_grasp01.json"
+#fp = r"data/bag/0912/anno/backfront_01.json"
+fp = r"data/bag/0912_topdownbags/anno/topdown_grasp01.json"
+#fp = r"data/bag/0915_layerbags/anno/backfront_grasp01.json"
+#fp = r"data/bag/0916_backfront_val/anno/backfront_grasp01.json"
 
 # Validation
 if not os.path.isfile(fp) or not os.path.isdir(data_root):
