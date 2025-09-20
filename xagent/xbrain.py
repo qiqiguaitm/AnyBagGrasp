@@ -110,227 +110,67 @@ class Xbrain:
     
     def _parse_action_list(self, response_text: str) -> List[Dict]:
         """
-        Parse the VLM response to extract structured action list and detailed object analysis
-        
-        Args:
-            response_text: Raw response from VLM with structured object analysis
-            
-        Returns:
-            List of action dictionaries with enhanced object information
+        Simple parser for VLM action list
         """
         import re
         actions = []
         
-        # Parse detailed object information from the structured response
-        object_analysis = self._parse_object_analysis(response_text)
-        spatial_analysis = self._parse_spatial_analysis(response_text)
+        # Find action sequence section
+        match = re.search(r'\*\*动作序列：\*\*(.*?)(?:\*\*|$)', response_text, re.DOTALL)
+        action_text = match.group(1) if match else response_text
         
-        # Look for pick_n_place function calls - handle both inline and code block formats
-        # First pattern: backtick-wrapped function calls (may include nested parentheses)
-        pick_pattern1 = r'`pick_n_place\s*\(([^`]+)\)`'
-        # Second pattern: regular function calls (may include nested parentheses)
-        pick_pattern2 = r'pick_n_place\s*\(([^)]*(?:\([^)]*\)[^)]*)*)\)'
-        
-        matches = []
-        # Try backtick pattern first (more specific)
-        backtick_matches = re.findall(pick_pattern1, response_text, re.IGNORECASE)
-        matches.extend(backtick_matches)
-        # Then try regular pattern but avoid duplicates
-        regular_matches = re.findall(pick_pattern2, response_text, re.IGNORECASE)
-        # Filter out matches that were already found with backticks
-        for rm in regular_matches:
-            if rm not in matches:
-                matches.append(rm)
-        
-        print(f"DEBUG: Found {len(matches)} pick_n_place function calls")
-        
-        for i, match in enumerate(matches):
-            # Parse parameters from the function call
+        # Find all pick_n_place calls
+        for line in action_text.split('\n'):
+            if 'pick_n_place' not in line:
+                continue
+                
+            # Extract parameters using simple regex
             params = {}
-            description = f"pick_n_place({match})"
             
-            # Extract object_id - handle both quoted and unquoted, including Chinese characters
-            object_match = re.search(r'object_id\s*=\s*"([^"]+)"', match)
-            if not object_match:
-                object_match = re.search(r"object_id\s*=\s*'([^']+)'", match)
-            if not object_match:
-                # Try without quotes
-                object_match = re.search(r'object_id\s*=\s*([^,\)]+)', match)
+            # object_id
+            m = re.search(r'object_id\s*=\s*["\']([^"\']+)["\']', line)
+            if m:
+                params['object_id'] = m.group(1)
             
-            if object_match:
-                obj_id = object_match.group(1).strip()
-                # Clean up object ID but preserve Chinese characters
-                if obj_id and obj_id != 'object_id':  # Filter out placeholder values
-                    params['object_id'] = obj_id
-            
-            # Extract source_position
-            src_match = re.search(r'source_position\s*=\s*\(([^)]+)\)', match)
-            if src_match:
-                coords = src_match.group(1).split(',')
-                if len(coords) >= 2:
+            # source_position
+            if 'source_position=swap_tmp_area' in line:
+                params['source_position'] = 'swap_tmp_area'
+            else:
+                m = re.search(r'source_position\s*=\s*\(([^)]+)\)', line)
+                if m:
                     try:
-                        x = float(coords[0].strip())
-                        y = float(coords[1].strip())
-                        # Validate coordinates are reasonable
-                        if 0 <= x <= 10000 and 0 <= y <= 10000:
-                            params['source_position'] = (x, y)
-                    except ValueError:
+                        params['source_position'] = tuple(map(float, m.group(1).split(',')))
+                    except:
                         pass
             
-            # Extract target_position - handle coordinates and special values
-            if 'swap_tmp_area' in match:
+            # target_position  
+            if 'target_position=swap_tmp_area' in line:
                 params['target_position'] = 'swap_tmp_area'
-                params['use_temporary_area'] = True
             else:
-                # Try to match coordinate format first
-                pos_match = re.search(r'target_position\s*=\s*\(([^)]+)\)', match)
-                if pos_match:
-                    coords = pos_match.group(1).split(',')
-                    if len(coords) >= 2:
-                        try:
-                            x = float(coords[0].strip())
-                            y = float(coords[1].strip())
-                            # Validate coordinates are reasonable
-                            if 0 <= x <= 10000 and 0 <= y <= 10000:
-                                params['target_position'] = (x, y)
-                            else:
-                                # Coordinates out of reasonable range
-                                params['target_position'] = pos_match.group(1).strip()
-                        except ValueError:
-                            params['target_position'] = pos_match.group(1).strip()
-                else:
-                    # Try to match any value after target_position=
-                    target_match = re.search(r'target_position\s*=\s*([^,\)]+)', match)
-                    if target_match:
-                        params['target_position'] = target_match.group(1).strip()
+                m = re.search(r'target_position\s*=\s*\(([^)]+)\)', line)
+                if m:
+                    try:
+                        params['target_position'] = tuple(map(float, m.group(1).split(',')))
+                    except:
+                        pass
             
-            # Extract color and object information for fallback
-            if not params.get('object_id'):
-                # Look for object IDs in the match
-                object_id_patterns = [r'object_(\d+)', r'(\w+)_bag', r'(\w+)色', r'(pink|yellow|blue|粉色|黄色|蓝色)']
-                for pattern in object_id_patterns:
-                    obj_match = re.search(pattern, match, re.IGNORECASE)
-                    if obj_match:
-                        params['object_id'] = obj_match.group(1)
-                        break
-            
-            # Add detailed object information if available
-            if params.get('object_id') and object_analysis:
-                for obj_id, obj_info in object_analysis.items():
-                    if params['object_id'] in obj_id or obj_id in params['object_id']:
-                        params['object_details'] = obj_info
-                        break
-            
-            # Only add action if it has valid parameters (both object_id and target_position)
+            # Add action if valid
             if params.get('object_id') and params.get('target_position'):
                 actions.append({
                     'type': 'pick_n_place',
-                    'description': description,
-                    'params': params,
-                    'object_analysis': object_analysis,
-                    'spatial_analysis': spatial_analysis
+                    'params': params
                 })
         
-        # If no function calls found, look for numbered action sequences
-        if not actions:
-            lines = response_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Look for numbered actions or key action words
-                if (re.match(r'^\d+\.', line) and 
-                    any(keyword in line.lower() for keyword in ['pick_n_place', '抓取', '移动', '放置', 'object_'])):
-                    
-                    action = {
-                        'type': 'pick_n_place',
-                        'description': line,
-                        'params': {},
-                        'object_analysis': object_analysis,
-                        'spatial_analysis': spatial_analysis
-                    }
-                    
-                    # Extract object information from the line
-                    object_patterns = [
-                        r'object_(\w+)', r'(\w+)_bag', r'(\w+)色袋', 
-                        r'(pink|yellow|blue|粉色|黄色|蓝色)', r'object_(\d+)'
-                    ]
-                    for pattern in object_patterns:
-                        obj_match = re.search(pattern, line, re.IGNORECASE)
-                        if obj_match:
-                            action['params']['object_id'] = obj_match.group(1)
-                            break
-                    
-                    # Extract coordinate information
-                    coord_match = re.search(r'\((\d+\.?\d*),\s*(\d+\.?\d*)\)', line)
-                    if coord_match:
-                        try:
-                            x, y = float(coord_match.group(1)), float(coord_match.group(2))
-                            action['params']['target_position'] = (x, y)
-                        except ValueError:
-                            pass
-                    
-                    # Extract relative position information
-                    if not action['params'].get('target_position'):
-                        if '左' in line or 'left' in line.lower():
-                            action['params']['target_position'] = 'left'
-                        elif '中' in line or 'middle' in line.lower():
-                            action['params']['target_position'] = 'middle'
-                        elif '右' in line or 'right' in line.lower():
-                            action['params']['target_position'] = 'right'
-                        elif 'swap_tmp_area' in line:
-                            action['params']['target_position'] = 'swap_tmp_area'
-                            action['params']['use_temporary_area'] = True
-                    
-                    actions.append(action)
-        
-        # If still no specific actions found, create a comprehensive analysis action
-        if not actions:
-            actions = [
-                {
-                    'type': 'scene_analysis',
-                    'description': '详细场景分析和物体识别',
-                    'params': {},
-                    'object_analysis': object_analysis,
-                    'spatial_analysis': spatial_analysis
-                }
-            ]
-            
-            # Add a plan execution action with the full response
-            if len(response_text) > 100:  # Only add if there's substantial content
-                actions.append({
-                    'type': 'plan_execution',
-                    'description': response_text[:300] + '...' if len(response_text) > 300 else response_text,
-                    'params': {},
-                    'full_analysis': response_text
-                })
-        
-        # Remove duplicate actions but preserve detailed information
-        seen = set()
-        unique_actions = []
+        # Add reset_to_home after each pick_n_place
+        final_actions = []
         for action in actions:
-            action_key = (action['type'], action['params'].get('object_id', ''), 
-                         str(action['params'].get('target_position', '')))
-            if action_key not in seen:
-                seen.add(action_key)
-                unique_actions.append(action)
+            final_actions.append(action)
+            final_actions.append({
+                'type': 'reset_to_home',
+                'params': {}
+            })
         
-        # Insert reset_to_home after each pick_n_place operation
-        enhanced_actions = []
-        for action in unique_actions:
-            enhanced_actions.append(action)
-            
-            # Add reset_to_home after each pick_n_place
-            if action['type'] == 'pick_n_place':
-                reset_action = {
-                    'type': 'reset_to_home',
-                    'description': '返回初始位置',
-                    'params': {}
-                }
-                enhanced_actions.append(reset_action)
-        
-        return enhanced_actions[:20]  # Limit to prevent excessive actions
+        return final_actions
     
     def _parse_object_analysis(self, response_text: str) -> Dict:
         """
@@ -347,8 +187,9 @@ class Xbrain:
         
         # Look for object analysis sections - updated to handle Chinese ID format
         # Pattern to match object ID with possible markdown formatting and full Chinese names
-        object_pattern = r'物体ID:\s*\**\s*([^*\n]+?)\s*\**\s*(.*?)(?=物体ID:|\*\*第[二三四]步|---\n\*\*物体ID:|$)'
-        matches = re.findall(object_pattern, response_text, re.DOTALL | re.IGNORECASE)
+        # Match until we hit another section marker or end
+        object_pattern = r'\*\*物体ID:\s*([^*\n]+?)\*\*\s*(.*?)(?=\n---\n|\*\*物体ID:|\*\*第[二三四]步|$)'
+        matches = re.findall(object_pattern, response_text, re.DOTALL)
         
         for object_id, content in matches:
             # Clean up object_id (remove trailing spaces and special chars but keep full name)
@@ -359,15 +200,11 @@ class Xbrain:
             
             # Parse each attribute - handle both [] and non-bracketed formats
             attributes = {
-                '类别': [r'类别:\s*\[([^\]]+)\]', r'类别:\s*([^\n]+)'],
-                '颜色': [r'颜色:\s*\[([^\]]+)\]', r'颜色:\s*([^\n]+)'],
-                '大小': [r'大小:\s*\[([^\]]+)\]', r'大小:\s*([^\n]+)'],
-                '位置': [r'位置:\s*\[([^\]]+)\]', r'位置:\s*([^\n]+)'],
-                '形状': [r'形状:\s*\[([^\]]+)\]', r'形状:\s*([^\n]+)'],
-                '材质属性': [r'材质属性:\s*\[([^\]]+)\]', r'材质属性:\s*([^\n]+)'],
-                '朝向角度': [r'朝向角度:\s*\[([^\]]+)\]', r'朝向角度:\s*([^\n]+)'],
-                '稳定性': [r'稳定性:\s*\[([^\]]+)\]', r'稳定性:\s*([^\n]+)'],
-                '可抓取点': [r'可抓取点:\s*\[([^\]]+)\]', r'可抓取点:\s*([^\n]+)']
+                '类别': [r'-\s*类别:\s*(.+?)(?=\n|$)', r'类别:\s*(.+?)(?=\n|$)'],
+                '颜色': [r'-\s*颜色:\s*(.+?)(?=\n|$)', r'颜色:\s*(.+?)(?=\n|$)'],
+                '大小': [r'-\s*大小:\s*(.+?)(?=\n|$)', r'大小:\s*(.+?)(?=\n|$)'],
+                '位置': [r'-\s*位置:\s*(.+?)(?=\n|$)', r'位置:\s*(.+?)(?=\n|$)'],
+
             }
             
             for attr_name, patterns in attributes.items():
@@ -406,11 +243,6 @@ class Xbrain:
             '左右顺序': [r'左右顺序:\s*\[([^\]]+)\]', r'左右顺序:\s*((?:[^*\n]+(?:\n\s*-[^\n]+)*)+)'],
             '前后关系': [r'前后关系:\s*\[([^\]]+)\]', r'前后关系:\s*([^*\n]+(?:\n[^*\n-]+)*)'],
             '相对距离': [r'相对距离:\s*\[([^\]]+)\]', r'相对距离:\s*([^*\n]+(?:\n[^*\n-]+)*)'],
-            '空间占用': [r'空间占用:\s*\[([^\]]+)\]', r'空间占用:\s*([^*\n]+(?:\n[^*\n-]+)*)'],
-            '自由空间': [r'自由空间:\s*\[([^\]]+)\]', r'自由空间:\s*([^*\n]+(?:\n[^*\n-]+)*)'],
-            '相邻接触': [r'相邻接触:\s*\[([^\]]+)\]', r'相邻接触:\s*([^*\n]+(?:\n[^*\n-]+)*)'],
-            '重叠情况': [r'重叠情况:\s*\[([^\]]+)\]', r'重叠情况:\s*([^*\n]+(?:\n[^*\n-]+)*)'],
-            '支撑关系': [r'支撑关系:\s*\[([^\]]+)\]', r'支撑关系:\s*([^*\n]+(?:\n[^*\n-]+)*)']
         }
         
         for section_name, patterns in sections.items():
@@ -571,10 +403,17 @@ class Xbrain:
             # Enhance task description with object information
             object_info_text = self._format_object_info(objects)
             #object_info_text = self._format_object_info(objects)
-            enhanced_text = f"{object_info_text}\n\n {text}"
+            enhanced_text = f"【重要】以下是检测系统提供的精确物体信息，请优先使用这些数据：\n{object_info_text}\n\n任务要求：{text}"
             
             # Prepare system prompt for structured output
-            system_prompt = f"""你是智能机器人Agent大脑，具备视觉理解、空间推理和精确操作能力。请按照以下结构化格式逐步分析并输出：
+            system_prompt = f"""你是智能机器人Agent大脑，具备视觉理解、空间推理和精确操作能力。
+
+【重要指示】
+1. 系统已提供精确的物体检测信息，包括准确的位置坐标、边界框和置信度
+2. 在生成动作序列时，必须优先使用检测系统提供的坐标，而非视觉估计
+3. 确保所有坐标值直接引用检测数据，提高操作精度
+
+请按照以下结构化格式逐步分析并输出：
 
 **第一步：逐个物体详细分析**
 请仔细分析图像中的每个物体，逐个输出详细信息：
@@ -584,12 +423,7 @@ class Xbrain:
 - 类别: [具体类别名称，如"手提袋"、"盒子"等]
 - 颜色: [主要颜色和辅助颜色，如"粉色主体，黑色手柄"]
 - 大小: [相对大小描述和像素尺寸，如"中等大小，约120x80像素"]
-- 位置: [精确坐标和区域描述，如"(245, 180)，位于图像左侧区域"]
-- 形状: [几何形状特征，如"矩形袋状，略扁平"]
-- 材质属性: [表面材质，如"光滑塑料材质"、"编织布料"]
-- 朝向角度: [物体朝向，如"正面朝向相机"、"侧面45度角"]
-- 稳定性: [抓取稳定性评估，如"底部平稳，易于抓取"]
-- 可抓取点: [推荐抓取位置，如"顶部手柄，边缘位置"]
+- 位置: [必须使用检测系统提供的精确坐标，如检测到的"(245, 180)"，并补充区域描述]
 
 **物体ID命名规则：**
 - 颜色：粉色、黄色、蓝色、红色、绿色、白色、黑色、橙色、紫色等
@@ -605,14 +439,7 @@ class Xbrain:
 - 整体布局: [描述物体在场景中的总体分布模式]
 - 左右顺序: [从左到右列出物体排列，如"左侧：粉色袋，中间：黄色袋，右侧：蓝色袋"]
 - 前后关系: [描述物体的前后层次，如"所有物体位于同一平面，无前后遮挡"]
-- 相对距离: [物体间距离，如"粉色袋与黄色袋间距约50像素"]
-- 空间占用: [每个物体占用的空间范围]
-- 自由空间: [识别可用于移动的空白区域]
 
-**接触关系：**
-- 相邻接触: [哪些物体相互接触或临近]
-- 重叠情况: [是否存在物体重叠或遮挡]
-- 支撑关系: [物体的支撑情况和稳定性]
 
 **第三步：任务理解和冲突分析**
 基于详细的物体和空间分析：
@@ -642,14 +469,25 @@ class Xbrain:
 **执行策略：**
 [详细说明移动顺序的逻辑依据，冲突避免方案，效率优化考虑]
 
+**【重要】位置分配原则：**
+- 🔴 必须优先使用现有物体的位置或swap_tmp_area进行位置交换
+- 🔴 严禁开辟新的空间位置（除非绝对必要）
+- 🔴 当需要重新排列物体时，应该将物体移动到其他物体当前所在的位置或swap_tmp_area
+- 🔴 如果物体A需要移到位置1，而位置1被物体B占用，则先将B移到A的位置或临时区
+- 🔴 目标位置应从已有的source_position或swap_tmp_area中且空的位置[特别注意]选择，实现位置互换
+
 **动作序列：**
-1. pick_n_place(object_id="粉色中等手提袋1", source_position=(当前x,y), target_position=(目标x,y)) - [详细操作描述和理由]
-2. pick_n_place(object_id="黄色小型手提袋2", source_position=(当前x,y), target_position=swap_tmp_area) - [移至临时区的具体原因]
-3. pick_n_place(object_id="蓝色大型手提袋3", source_position=(当前x,y), target_position=(目标x,y)) - [详细操作描述和理由]
+示例格式：
+1. pick_n_place(object_id="物体A", source_position=(738,633), target_position=swap_tmp_area) - 将A移至临时区，腾出其位置
+2. pick_n_place(object_id="物体B", source_position=(930,634), target_position=(738,633)) - B移到A原来的位置
+3. pick_n_place(object_id="物体C", source_position=(1127,627), target_position=(930,634)) - C移到B原来的位置
+4. pick_n_place(object_id="物体A", source_position=swap_tmp_area, target_position=(1127,627)) - A从临时区移到C原来的位置
 
 **质量要求：**
 - 坐标必须精确到像素级别，避免空间冲突
 - 物体标识要与前面分析的物体ID一致
+- 🔴 target_position必须是已有的source_position或swap_tmp_area且空的位置[特别注意]
+- 🔴 严格遵循位置重用原则，不创建新位置
 - 考虑操作的物理可行性和安全性
 - 优化移动次数，提高整体效率
 - 每个动作都要有明确的执行理由"""
@@ -681,59 +519,50 @@ class Xbrain:
             response_text = completion.choices[0].message.content
             print("=== VLM Response ===")
             print(response_text)
+            
+            # 1. Parse and print object analysis independently
+            print("\n=== 物体分析 Object Analysis ===")
+            object_analysis = self._parse_object_analysis(response_text)
+            if object_analysis:
+                print(f"检测到 {len(object_analysis)} 个物体:")
+                for obj_id, details in object_analysis.items():
+                    print(f"  ► {obj_id}:")
+                    if details:
+                        for attr, value in details.items():
+                            print(f"      {attr}: {value}")
+                    print()
+            else:
+                print("未解析到物体信息")
+            
+            # 2. Parse and print spatial analysis independently  
+            print("\n=== 空间分析 Spatial Analysis ===")
+            spatial_analysis = self._parse_spatial_analysis(response_text)
+            if spatial_analysis:
+                print(f"解析到 {len(spatial_analysis)} 个空间关系:")
+                for section, content in spatial_analysis.items():
+                    print(f"  ► {section}: {content}")
+            else:
+                print("未解析到空间关系")
+            
+            # 3. Parse and print action list independently
+            print("\n=== 动作序列 Action List ===")
             action_list = self._parse_action_list(response_text)
-            
-            # Print detailed analysis results
-            print("\n=== 解析结果 ===")
-            
-            # Extract and print object information
-            if action_list and len(action_list) > 0 and 'object_analysis' in action_list[0]:
-                object_info = action_list[0]['object_analysis']
-                if object_info:
-                    print(f"\n【物体信息 Object Info】: 检测到{len(object_info)}个物体")
-                    for obj_id, details in object_info.items():
-                        print(f"  ► {obj_id}:")
-                        if details:
-                            for attr, value in details.items():
-                                print(f"      {attr}: {value}")
-                        else:
-                            print(f"      (无详细属性信息)")
-                        print()
-                else:
-                    print("\n【物体信息 Object Info】: 解析结果为空")
-            else:
-                print("\n【物体信息 Object Info】: 未解析到详细物体信息")
-            
-            # Extract and print spatial information  
-            if action_list and len(action_list) > 0 and 'spatial_analysis' in action_list[0]:
-                spatial_info = action_list[0]['spatial_analysis']
-                if spatial_info:
-                    print(f"\n【空间信息 Spatial Info】: {len(spatial_info)}个空间属性")
-                    for section, content in spatial_info.items():
-                        print(f"  ► {section}: {content}")
-                else:
-                    print("\n【空间信息 Spatial Info】: 解析结果为空")
-            else:
-                print("\n【空间信息 Spatial Info】: 未解析到空间关系信息")
-            
-            # Print action list
-            print(f"\n【规划信息 Action List】: 共{len(action_list)}个动作")
+            print(f"生成 {len(action_list)} 个动作:")
             for i, action in enumerate(action_list, 1):
-                # Format action display based on type
                 if action['type'] == 'pick_n_place':
-                    obj_id = action['params'].get('object_id', 'unknown')
-                    source = action['params'].get('source_position', None)
-                    target = action['params'].get('target_position', 'unknown')
+                    params = action['params']
+                    obj_id = params.get('object_id', 'unknown')
+                    source = params.get('source_position', 'unknown')
+                    target = params.get('target_position', 'unknown')
                     
-                    # Format source position
-                    if source and isinstance(source, tuple) and len(source) == 2:
-                        source_str = f"({source[0]:.0f}, {source[1]:.0f})"
+                    # Format positions
+                    if isinstance(source, tuple):
+                        source_str = f"({source[0]:.0f},{source[1]:.0f})"
                     else:
-                        source_str = "当前位置"
+                        source_str = str(source)
                     
-                    # Format target position
-                    if isinstance(target, tuple) and len(target) == 2:
-                        target_str = f"({target[0]:.0f}, {target[1]:.0f})"
+                    if isinstance(target, tuple):
+                        target_str = f"({target[0]:.0f},{target[1]:.0f})"
                     else:
                         target_str = str(target)
                     
@@ -741,7 +570,7 @@ class Xbrain:
                 elif action['type'] == 'reset_to_home':
                     print(f"  {i}. reset_to_home: 返回初始位置")
                 else:
-                    print(f"  {i}. {action['type']}: {action.get('description', '')}")
+                    print(f"  {i}. {action['type']}")
             
             return action_list
             
@@ -874,101 +703,13 @@ class Xbrain:
             
         except Exception as e:
             return [{'error': str(e)}]
-    
-   
-
-def main():
-    """Test the Xbrain class"""
-    print("=== Testing Enhanced Xbrain (with object detection) ===")
-    # Test with DINO APIs
-    brain_basic = Xbrain(use_default_configs=True)
-    
-    text_prompt = "要求将抓取和交换小手提袋，实现从左到右依次排列pink，yellow，blue排列，你打算如何进行。"
-    
-    try:
-        action_list = brain_basic.get_plan("example.jpg", text_prompt)
-        print(f"VLM规划生成 {len(action_list)} 个动作步骤")
-        
-        # Show all actions with full details
-        for i, action in enumerate(action_list):
-            if action['type'] == 'pick_n_place':
-                obj_id = action['params'].get('object_id', 'unknown')
-                source = action['params'].get('source_position', None)
-                target = action['params'].get('target_position', 'unknown')
-                
-                # Format source position
-                if source and isinstance(source, tuple) and len(source) == 2:
-                    source_str = f"({source[0]:.0f}, {source[1]:.0f})"
-                else:
-                    source_str = "当前位置"
-                
-                # Format target position
-                if isinstance(target, tuple) and len(target) == 2:
-                    target_str = f"({target[0]:.0f}, {target[1]:.0f})"
-                else:
-                    target_str = str(target)
-                
-                print(f"{i}. pick_n_place: '{obj_id}' 从{source_str} -> 移动到{target_str}")
-            elif action['type'] == 'reset_to_home':
-                print(f"{i}. reset_to_home: 返回初始位置")
-            else:
-                # Print full description without truncation
-                print(f"{i}. {action['type']}: {action['description']}")
-            
-    except Exception as e:
-        print(f"Basic test failed: {e}")
-    
-    
-    '''
-    print("\n" + "="*50)
-    print("=== Testing Enhanced Xbrain (with default DINO configs) ===")
-    
-    # Test with default configs from xdino.py
-    try:
-        brain_enhanced = Xbrain(use_default_configs=True)
-        
-        print("\n--- Enhanced Planning with Grasp Detection ---")
-        enhanced_actions = brain_enhanced.get_plan("example.jpg", text_prompt)
-        print(f"增强规划生成 {len(enhanced_actions)} 个动作步骤")
-        
-        # Show first few actions to see if grasp info is integrated
-        for i, action in enumerate(enhanced_actions[:3], 1):
-            print(f"{i}. {action['type']}: {action['description'][:80]}...")
-        
-        # Test object detection
-        print("\n--- Object Detection ---")
-        objects = brain_enhanced.get_objects("example.jpg", "bags, objects")
-        if objects and 'error' not in objects[0]:
-            print(f"检测到 {len(objects)} 个对象")
-            for obj in objects[:2]:  # Show first 2 objects
-                print(f"  - {obj['category']}: {obj['score']:.2f}")
-        else:
-            print(f"检测结果: {objects[0] if objects else 'No results'}")
-        
-        # Test grasp detection
-        print("\n--- Grasp Point Detection ---")
-        grasps = brain_enhanced.get_grasp_points("example.jpg")
-        if grasps and 'error' not in grasps[0]:
-            print(f"检测到 {len(grasps)} 个抓取候选")
-            for grasp in grasps[:2]:  # Show first 2 grasps
-                print(f"  - 抓取点数量: {len(grasp.get('touching_points', []))}")
-        else:
-            print(f"抓取检测结果: {grasps[0] if grasps else 'No results'}")
-        
-        # Test combined analysis
-        print("\n--- Combined Analysis ---")
-        combined = brain_enhanced.get_combined_analysis("example.jpg", text_prompt)
-        print(f"分析状态: {combined['status']}")
-        print(f"检测到对象: {len(combined['detected_objects'])}")
-        print(f"抓取点: {len(combined['grasp_points'])}")
-        print(f"动作计划: {len(combined['action_plan'])} 步")
-        
-    except Exception as e:
-        print(f"Enhanced test failed: {e}")
-        
-    '''
-
 
 
 if __name__ == "__main__":
-    main()
+    xbrain = Xbrain(use_default_configs=True)
+    text_prompt = "要求交换和调整小型手提袋位置，实现从左到右依次排列pink，yellow，blue排列，你打算如何进行。"
+    # complex scene example
+    #action_list = xbrain.get_plan("example.png", text_prompt)
+    # simple scene example
+    action_list = xbrain.get_plan("example1.png", text_prompt, model="qwen2.5-vl-72b-instruct")
+    
