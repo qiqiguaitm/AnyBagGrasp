@@ -1024,7 +1024,7 @@ if __name__ == "__main__":
         image_path=test_image,
         text=task,
         vlm_model="qwen2.5-vl-3b-instruct",
-        llm_model="qwen3-4b"
+        llm_model="qwen-turbo"  # Use qwen-turbo instead of qwen3-4b to avoid thinking model issues
     )
     fast_time = time.time() - start_time
     
