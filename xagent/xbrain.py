@@ -45,23 +45,38 @@ class DashscopePlatform(VLMPlatform):
             "qwen-vl-max",
             "qwen-vl-plus",
             'qwen2.5-vl-3b-instruct',
-             "qwen2.5-vl-7b-instruct",
+            "qwen2.5-vl-7b-instruct",
             # Text-only LLM models
             "qwen3-4b",
             "qwen3-8b",
-            "qwen3-0.6b",
+            "qwen3-30b-a3b",
+            'qwen3-30b-a3b-thinking-2507',
             "qwen-max",
             "qwen-turbo",
+            'qwen3-next-80b-a3b-thinking',
         ]
     
     def chat_completion(self, messages: List[Dict], model: str, **kwargs) -> str:
         if model not in self.supported_models:
             raise ValueError(f"Model {model} not supported by Dashscope. Supported models: {self.supported_models}")
         
+        # Filter out unsupported parameters
+        filtered_kwargs = {}
+        supported_params = ['temperature', 'max_tokens', 'top_p', 'frequency_penalty', 
+                          'presence_penalty', 'stop', 'stream', 'n']
+        for key, value in kwargs.items():
+            if key in supported_params:
+                filtered_kwargs[key] = value
+        
+        # Special handling for qwen3 series models
+        # These models require enable_thinking=false for non-streaming API calls
+        if model.startswith('qwen3') and 'thinking' not in model.lower():
+            filtered_kwargs['extra_body'] = {'enable_thinking': False}
+        
         completion = self.xbrain.chat.completions.create(
             model=model,
             messages=messages,
-            **kwargs
+            **filtered_kwargs
         )
         
         return completion.choices[0].message.content
@@ -85,6 +100,7 @@ class SiliconFlowPlatform(VLMPlatform):
         
         self.supported_models = [
             "zai-org/GLM-4.5V",
+            'THUDM/GLM-Z1-9B-0414',
             "THUDM/GLM-4.1V-9B-Thinking",
             "Qwen/Qwen2.5-VL-72B-Instruct",
             "Pro/THUDM/GLM-4.1V-9B-Thinking",
@@ -99,17 +115,26 @@ class SiliconFlowPlatform(VLMPlatform):
             "Content-Type": "application/json"
         }
         
+        # Build payload with only provided parameters
         payload = {
             "model": model,
             "messages": self._format_messages(messages),
-            "stream": False,
-            "temperature": kwargs.get("temperature", 0.7),
-            "top_p": kwargs.get("top_p", 0.7),
-            "top_k": kwargs.get("top_k", 50),
-            "frequency_penalty": kwargs.get("frequency_penalty", 0.5),
-            "n": kwargs.get("n", 1),
-            "stop": kwargs.get("stop", [])
+            "stream": False
         }
+        
+        # Only add parameters if they are explicitly provided
+        if "temperature" in kwargs:
+            payload["temperature"] = kwargs["temperature"]
+        if "top_p" in kwargs:
+            payload["top_p"] = kwargs["top_p"]
+        if "top_k" in kwargs:
+            payload["top_k"] = kwargs["top_k"]
+        if "frequency_penalty" in kwargs:
+            payload["frequency_penalty"] = kwargs["frequency_penalty"]
+        if "n" in kwargs:
+            payload["n"] = kwargs["n"]
+        if "stop" in kwargs:
+            payload["stop"] = kwargs["stop"]
         
         if model in ["THUDM/GLM-4.1V-9B-Thinking", "Pro/THUDM/GLM-4.1V-9B-Thinking"]:
             payload["thinking_budget"] = kwargs.get("thinking_budget", 4096)
@@ -156,24 +181,67 @@ class SiliconFlowPlatform(VLMPlatform):
 
 
 class Xbrain:
-    """Unified VLM brain supporting multiple platforms"""
+    """Unified VLM brain supporting multiple platforms with automatic platform switching"""
     
-    def __init__(self, platform: str = "dashscope", api_key: Optional[str] = None):
+    def __init__(self, platform: str = "auto", api_key: Optional[str] = None):
         """
         Initialize VLM brain with specified platform
         
         Args:
-            platform: Platform name ("dashscope" or "siliconflow")
-            api_key: API key for the platform
+            platform: Platform name ("dashscope", "siliconflow", or "auto" for automatic selection)
+            api_key: API key for the platform (not used in auto mode)
         """
         self.platform_name = platform.lower()
         
-        if self.platform_name == "dashscope":
+        # Initialize both platforms in auto mode
+        if self.platform_name == "auto":
+            self.platforms = {
+                "dashscope": DashscopePlatform(),
+                "siliconflow": SiliconFlowPlatform()
+            }
+            self.platform = None  # Will be set dynamically based on model
+        elif self.platform_name == "dashscope":
             self.platform = DashscopePlatform(api_key)
+            self.platforms = None
         elif self.platform_name == "siliconflow":
             self.platform = SiliconFlowPlatform(api_key)
+            self.platforms = None
         else:
             raise ValueError(f"Unsupported platform: {platform}")
+    
+    def _get_platform_for_model(self, model: str) -> VLMPlatform:
+        """
+        Automatically determine which platform supports the given model
+        
+        Args:
+            model: Model name
+            
+        Returns:
+            The platform that supports this model
+            
+        Raises:
+            ValueError: If no platform supports the model
+        """
+        if self.platform_name != "auto":
+            # If not in auto mode, return the fixed platform
+            return self.platform
+        
+        # In auto mode, check which platform supports the model
+        for platform_name, platform in self.platforms.items():
+            if model in platform.get_supported_models():
+                return platform
+        
+        # Model not found in any platform, provide helpful error message
+        all_models = {}
+        for platform_name, platform in self.platforms.items():
+            all_models[platform_name] = platform.get_supported_models()
+        
+        raise ValueError(
+            f"Model '{model}' not supported by any platform.\n"
+            f"Available models:\n"
+            f"  Dashscope: {all_models['dashscope']}\n"
+            f"  SiliconFlow: {all_models['siliconflow']}"
+        )
     
     def encode_image_to_base64(self, image_path: str) -> str:
         """Encode local image to base64 data URL, with optional resizing to reduce size"""
@@ -213,7 +281,7 @@ class Xbrain:
              model: Optional[str] = None,
              **kwargs) -> str:
         """
-        Send chat completion request.
+        Send chat completion request with automatic platform selection.
         
         Note: For image inputs, use chat_with_image() method instead.
         
@@ -245,7 +313,10 @@ class Xbrain:
         if model is None:
             model = self.get_default_model()
         
-        return self.platform.chat_completion(messages, model, **kwargs)
+        # Get the appropriate platform for this model
+        platform = self._get_platform_for_model(model)
+        
+        return platform.chat_completion(messages, model, **kwargs)
     
     def _chat_internal(self, messages: List[Dict], model: Optional[str] = None, **kwargs) -> str:
         """
@@ -262,7 +333,10 @@ class Xbrain:
         if model is None:
             model = self.get_default_model()
         
-        return self.platform.chat_completion(messages, model, **kwargs)
+        # Get the appropriate platform for this model
+        platform = self._get_platform_for_model(model)
+        
+        return platform.chat_completion(messages, model, **kwargs)
     
     def chat_with_image(self,
                        image: Union[str, bytes],
@@ -316,22 +390,43 @@ class Xbrain:
         return self._chat_internal(messages, model, **kwargs)
     
     def get_supported_models(self) -> List[str]:
-        """Get list of supported models for current platform"""
-        return self.platform.get_supported_models()
+        """Get list of all supported models across all platforms"""
+        if self.platform_name == "auto":
+            # In auto mode, return all models from all platforms
+            all_models = []
+            for platform in self.platforms.values():
+                all_models.extend(platform.get_supported_models())
+            return all_models
+        else:
+            # In fixed platform mode, return models from that platform
+            return self.platform.get_supported_models()
     
     def get_default_model(self) -> str:
-        """Get default model for current platform"""
-        models = self.platform.get_supported_models()
-        return models[0] if models else None
+        """Get default model (prefer dashscope's default in auto mode)"""
+        if self.platform_name == "auto":
+            # In auto mode, use dashscope's default model
+            return self.platforms["dashscope"].get_supported_models()[0]
+        else:
+            # In fixed platform mode, use that platform's default
+            models = self.platform.get_supported_models()
+            return models[0] if models else None
     
     def switch_platform(self, platform: str, api_key: Optional[str] = None):
-        """Switch to a different platform"""
+        """Switch to a different platform or enable auto mode"""
         self.platform_name = platform.lower()
         
-        if self.platform_name == "dashscope":
+        if self.platform_name == "auto":
+            self.platforms = {
+                "dashscope": DashscopePlatform(),
+                "siliconflow": SiliconFlowPlatform()
+            }
+            self.platform = None
+        elif self.platform_name == "dashscope":
             self.platform = DashscopePlatform(api_key)
+            self.platforms = None
         elif self.platform_name == "siliconflow":
             self.platform = SiliconFlowPlatform(api_key)
+            self.platforms = None
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 

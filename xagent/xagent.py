@@ -5,6 +5,7 @@ import json
 import re
 import cv2
 import numpy as np
+import requests
 from mmengine.config import Config
 
 
@@ -28,15 +29,15 @@ except ImportError:
 class XAgent:
     """Robot Agent Brain for task planning and control"""
     
-    def __init__(self, vlm_platform: str = "dashscope", vlm_api_key: str = None, detection_config: Dict = None, grasp_config: Dict = None, 
+    def __init__(self, vlm_platform: str = "auto", vlm_api_key: str = None, detection_config: Dict = None, grasp_config: Dict = None, 
                  use_default_configs: bool = True, swap_tmp_area: tuple = (0, 0),
                  ):
         """
         Initialize XAgent with API key and DINO configs
         
         Args:
-            vlm_platform: VLM platform to use ("dashscope" or "siliconflow")
-            vlm_api_key: API key for VLM platform (uses api_key if not provided)
+            vlm_platform: VLM platform to use ("dashscope", "siliconflow", or "auto" for automatic selection)
+            vlm_api_key: API key for VLM platform (only needed if not using auto mode)
             detection_config: Configuration for DetectionAPI
             grasp_config: Configuration for GraspAnythingAPI
             use_default_configs: Whether to use default configs from xdino.py
@@ -45,13 +46,14 @@ class XAgent:
             
         """
         
-        if vlm_api_key is None:
+        # In auto mode, we don't need an API key as both platforms will be initialized with their default keys
+        if vlm_platform != "auto" and vlm_api_key is None:
             if vlm_platform == "dashscope":
                 vlm_api_key = os.getenv("DASHSCOPE_API_KEY", "sk-e622f19390f646dab2a083ee16deb64c")
-            if vlm_platform == "siliconflow":
+            elif vlm_platform == "siliconflow":
                 vlm_api_key = os.getenv("SILICONFLOW_API_KEY", "sk-mwbqpbrgcpsraguhphsjddkftuqmkhvpwuxwzsvyucbqggvo")
-        if vlm_api_key is None:
-            raise ValueError("API key not available")
+            if vlm_api_key is None:
+                raise ValueError("API key not available")
         
         self.xbrain = Xbrain(platform=vlm_platform, api_key=vlm_api_key)
         # Store temporary swap area coordinates
@@ -423,78 +425,42 @@ class XAgent:
         
         return "抓取检测结果:\n" + "\n".join(grasp_info)
     
-    def _format_object_info(self, objects: List[Dict]) -> tuple:
+    def _format_object_info(self, objects: List[Dict]) -> str:
         """
-        Format object detection results and add position labels
+        Format object detection results (position labels should already be in objects)
         
         Args:
-            objects: List of object detection results
+            objects: List of object detection results with position_label
             
         Returns:
-            Tuple of (formatted string, enhanced objects list with position_label)
+            Formatted string describing the objects
         """
         if not objects or 'error' in objects[0]:
-            return "对象检测: 未检测到对象", objects
+            return "对象检测: 未检测到对象"
         
-        # First, sort objects by x-coordinate to determine positions
-        objects_with_x = []
-        for idx, obj in enumerate(objects):
-            bbox = obj.get('bbox', [])
-            if bbox and len(bbox) >= 4:
-                x1, y1, x2, y2 = bbox[:4]
-                center_x = (x1 + x2) / 2
-                objects_with_x.append((center_x, idx, obj))
-        
-        # Sort by x-coordinate
-        objects_with_x.sort(key=lambda x: x[0])
-        
-        # Determine position labels based on number of objects
-        num_objects = len(objects_with_x)
-        position_labels = []
-        if num_objects == 1:
-            position_labels = ["中"]
-        elif num_objects == 2:
-            position_labels = ["左", "右"]
-        elif num_objects == 3:
-            position_labels = ["左", "中", "右"]
-        elif num_objects == 4:
-            position_labels = ["左", "中左", "中右", "右"]
-        elif num_objects == 5:
-            position_labels = ["左", "中左", "中", "中右", "右"]
-        else:
-            # For more objects, divide into thirds
-            for i in range(num_objects):
-                if i < num_objects // 3:
-                    position_labels.append("左")
-                elif i < 2 * num_objects // 3:
-                    position_labels.append("中")
-                else:
-                    position_labels.append("右")
-        
-        # Create position mapping for original objects
-        position_map = {}
-        for i, (x_coord, orig_idx, obj) in enumerate(objects_with_x):
-            if i < len(position_labels):
-                position_map[orig_idx] = position_labels[i]
-        
-        # Add position_label to each object and format info
+        # Format info using existing position_label
         object_info = []
-        enhanced_objects = []
         
         for i, obj in enumerate(objects):
-            # Create a copy of the object and add position_label
-            enhanced_obj = obj.copy()
-            position = position_map.get(i, "未知")
-            enhanced_obj['position_label'] = position
-            enhanced_objects.append(enhanced_obj)
+            # Objects should already have position_label from get_objects
+            position = obj.get('position_label', '未知')
             
             # Format object description
-            obj_desc = f"对象{i+1}:"
+            #obj_desc = f"对象{i+1}:"
+            #obj_desc = obj.get('position_label','') + obj.get('color', '') + obj.get('category', '') 
+            obj_desc =  obj.get('color', '') + "手提袋"
             
+            '''
             # Add category information if available
             category = obj.get('category', '未知')
             if category and category != '未知':
                 obj_desc += f" 类别({category})"
+                
+            # Add color if available
+            color = obj.get('color', '')
+            if color:
+                obj_desc += f" 颜色({color})"
+            '''
             
             # Add position
             obj_desc += f" 位置({position})"
@@ -517,7 +483,7 @@ class XAgent:
             object_info.append(obj_desc)
         
         object_info_text = "对象检测结果:\n" + "\n".join(object_info)
-        return object_info_text, enhanced_objects
+        return object_info_text
 
     def get_plan(self, image_path: str, text: str, model: Optional[str] = None) -> List[Dict]:
         """
@@ -549,7 +515,7 @@ class XAgent:
             #print(f"DEBUG: Objects result: {objects[:2] if objects else 'None'}")
             
             # Enhance task description with object information
-            object_info_text, enhanced_objects = self._format_object_info(objects)
+            object_info_text = self._format_object_info(objects)
             enhanced_text = f"【重要】以下是检测系统提供的精确物体信息，请优先使用这些数据：\n{object_info_text}\n\n任务要求：{text}"
             
             # Simplified system prompt to avoid timeout issues
@@ -702,7 +668,7 @@ class XAgent:
             
             # Step 1: Use small VLM for object and spatial understanding
             print("\n[Step 1] Object and Spatial Analysis with Small VLM...")
-            description = self.describe_objects(image_path, model=vlm_model)
+            description = self.describe_objects_fast(image_path, model=vlm_model)
             object_info_text = description['object_info_text']
             print(f"Object Info:\n{object_info_text}")  
             spatial_info_text = description['spatial_info_text']
@@ -711,35 +677,44 @@ class XAgent:
             print("\n[Step 2] Task Planning with Small LLM...")
             
             # Step 2: Prepare context for LLM planning
-            planning_prompt = f"""你是一个机器人任务规划专家。基于以下场景信息，生成精确的动作序列。
+            planning_prompt = f"""你是机器人任务规划专家。生成最少步骤的动作序列。
 
-### 场景信息
-
-**检测到的物体：**
+## 当前状态
 {object_info_text}
 
-**空间关系：**
-{spatial_info_text}
-
-### 任务要求
+## 任务
 {text}
 
-### 可用操作
-- pick_n_place(object_id, source_position, target_position) - 从源位置拾取物体并放置到目标位置
-- 临时区域：swap_tmp_area=({self.swap_tmp_area[0]},{self.swap_tmp_area[1]}) 可用于临时放置物体
+## 核心规则
+1. 理解任务："从左到右依次排列A、B、C" = 左放A，中放B，右放C
+2. **关键原则：物体已在目标位置则保持不动！** 例如：如果任务要求粉色在左，而粉色已经在左，则不移动粉色
+3. **避免位置冲突**：永远不能将物体移到已被占用的位置！必须先将占用位置的物体移走
+4. 临时区swap_tmp_area=({self.swap_tmp_area[0]},{self.swap_tmp_area[1]})：当需要交换位置时，先移到临时区
 
-### 输出要求
-请生成简洁的动作序列，格式如下：
+## 位置交换示例
+如果A要移到B的位置，B要移到A的位置：
+1. pick_n_place("B", B位置, swap_tmp_area)  # 先移B到临时区
+2. pick_n_place("A", A位置, B位置)         # A移到B原位置
+3. pick_n_place("B", swap_tmp_area, A位置)  # B从临时区移到A原位置
 
-**动作序列：**
-1. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x2,y2))
-2. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=swap_tmp_area)
+## 输出格式
 
-注意：
-1. 使用检测到的精确坐标
-2. 物体ID必须与场景信息中的物体对应
-3. 合理使用swap_tmp_area避免冲突
-4. 确保动作序列能完成任务要求"""
+**步骤1 - 分析当前与目标：**
+当前：左=[颜色](x1,y1) 中=[颜色](x2,y2) 右=[颜色](x3,y3)
+目标：左=[颜色] 中=[颜色] 右=[颜色]
+
+**步骤2 - 判断需要移动的物体：**
+✓ [颜色]：已在正确位置，无需移动
+✗ [颜色]：需要从[当前位置]移到[目标位置]
+
+**步骤3 - 动作序列：**
+[检查位置冲突，如果目标位置被占用，先移走占用者到临时区]
+1. pick_n_place(object_id="[颜色]手提袋", source_position=(x,y), target_position=(x,y))
+...
+
+重要：
+- 已在目标位置的物体不要移动！
+- 永不能直接移到被占用的位置！必须先清空目标位置！"""
 
             # Step 3: Call LLM for planning (text-only)
             messages = [
@@ -754,8 +729,11 @@ class XAgent:
             ]
             
             # Use text-only chat method for LLM
-            # Note: qwen3 models work with standard chat API
-            llm_response = self.xbrain.chat(messages, model=llm_model)
+            # Let the platform use its default parameters
+            llm_response = self.xbrain.chat(
+                messages, 
+                model=llm_model
+            )
             
             print("=== LLM Planning Response ===")
             print(llm_response)
@@ -823,7 +801,7 @@ class XAgent:
             if isinstance(image, str):
                 if image.startswith('http'):
                     # Download image for processing
-                    import requests
+                    # requests already imported at top
                     response = requests.get(image)
                     rgb = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_COLOR)
                     rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
@@ -858,6 +836,53 @@ class XAgent:
                 }
                 formatted_objects.append(formatted_obj)
             
+            # Calculate position labels for objects
+            # First, sort objects by x-coordinate to determine positions
+            objects_with_x = []
+            for idx, obj in enumerate(formatted_objects):
+                bbox = obj.get('bbox', [])
+                if bbox and len(bbox) >= 4:
+                    x1, _, x2, _ = bbox[:4]
+                    center_x = (x1 + x2) / 2
+                    objects_with_x.append((center_x, idx, obj))
+            
+            # Sort by x-coordinate
+            objects_with_x.sort(key=lambda x: x[0])
+            
+            # Determine position labels based on number of objects
+            num_objects = len(objects_with_x)
+            position_labels = []
+            if num_objects == 1:
+                position_labels = ["中"]
+            elif num_objects == 2:
+                position_labels = ["左", "右"]
+            elif num_objects == 3:
+                position_labels = ["左", "中", "右"]
+            elif num_objects == 4:
+                position_labels = ["左", "中左", "中右", "右"]
+            elif num_objects == 5:
+                position_labels = ["左", "中左", "中", "中右", "右"]
+            else:
+                # For more objects, divide into thirds
+                for i in range(num_objects):
+                    if i < num_objects // 3:
+                        position_labels.append("左")
+                    elif i < 2 * num_objects // 3:
+                        position_labels.append("中")
+                    else:
+                        position_labels.append("右")
+            
+            # Create position mapping for original objects
+            position_map = {}
+            for i, (_, orig_idx, obj) in enumerate(objects_with_x):
+                if i < len(position_labels):
+                    position_map[orig_idx] = position_labels[i]
+            
+            # Add position_label to each object
+            for i, obj in enumerate(formatted_objects):
+                position = position_map.get(i, "未知")
+                obj['position_label'] = position
+            
             return formatted_objects
             
         except Exception as e:
@@ -887,17 +912,57 @@ class XAgent:
             return ret
         
         # Format initial object detection results
-        object_info_text, enhanced_objects = self._format_object_info(objects)
+        object_info_text = self._format_object_info(objects)
         
         
         print("\n=== object_info_text ===")
         print(object_info_text)
         
         # Step 2: Create prompt for VLM to analyze objects and spatial relationships
-        analysis_prompt = f"""请为仔细观察画面中的所有手提袋，补充以下颜色(粉色|浅蓝|黄色)和位置信息(左|中|右)：
-- 物体ID：[颜色+类型，如"粉色手提袋"]
-  - 颜色：[粉色|浅蓝|黄色]
-  - 位置：[左|中|右]"""
+        analysis_prompt = f"""请仔细观察画面中的三个手提袋，准确识别每个袋子的颜色和位置。
+
+检测结果显示有三个手提袋：
+{object_info_text}
+
+颜色识别重要提示：
+- 粉色（Pink）：偏红/粉红色调的袋子，通常比较淡
+- 浅蓝（Light Blue）：偏蓝/青/薄荷色调的袋子，可能看起来偏白或偏灰蓝
+- 黄色（Yellow）：最明亮、最暖的颜色，明显的黄色调
+
+关键区分点：
+- 黄色是三个中最暖、最亮的
+- 浅蓝可能看起来最淡、最冷
+- 粉色介于两者之间，带红色调
+
+⚠️ 注意区分：
+- 如果袋子偏白但带有蓝绿色调，选择"浅蓝"
+- 如果袋子偏白但带有粉红色调，选择"粉色"  
+- 纯黄色或淡黄色，选择"黄色"
+
+严格要求：
+1. 颜色只能从【粉色、浅蓝、黄色】三选一
+2. 三个袋子必须是三种不同的颜色，不能重复！
+3. 位置只能从【左、中、右】三选一
+4. 必须输出三个袋子，按位置从左到右排序
+
+⚠️ 重要颜色判断规则：
+1. 先找出最明显的黄色（暖色调、明亮）
+2. 再找出偏红/粉红色调的袋子标记为"粉色"
+3. 剩下的标记为"浅蓝"（可能偏白、偏蓝或偏青）
+
+常见错误纠正：
+- 如果有两个看起来都像黄色，选更亮的为"黄色"，另一个可能是"浅蓝"
+- 如果有袋子看起来是白色，它很可能是"浅蓝"
+- 每种颜色必须且只能出现一次！
+
+请直接返回JSON格式：
+```json
+[
+    {{"颜色": "粉色/浅蓝/黄色 之一", "位置": "左/中/右 之一"}},
+    {{"颜色": "粉色/浅蓝/黄色 之一", "位置": "左/中/右 之一"}},
+    {{"颜色": "粉色/浅蓝/黄色 之一", "位置": "左/中/右 之一"}},
+]
+```"""
 
         try:
             # Step 3: Call VLM for detailed analysis
@@ -905,18 +970,70 @@ class XAgent:
             response_text = self.xbrain.chat_with_image(
                 image=image_path,
                 text=analysis_prompt,
-                system_prompt="你是一个专业的视觉分析系统，能够精确识别和描述物体及其空间关系。请严格按照要求的格式输出。",
+                system_prompt="你是一个专业的颜色识别系统。关键规则：1)必须从【粉色、浅蓝、黄色】三个选项中选择；2)三个袋子必须分别是这三种不同颜色，不能重复；3)仔细观察每个袋子的色调差异。记住：每种颜色只能使用一次！",
                 model=model
             )
             
             print("\n=== VLM Raw Response ===")
             print(response_text)
+            
+            # Parse JSON from VLM response
+            # Extract JSON from response (it might be wrapped in markdown code blocks)
+            json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Try to find raw JSON array
+                json_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                else:
+                    json_str = response_text
+            
+            try:
+                vlm_objects = json.loads(json_str)
+                print("\n=== Parsed VLM Objects ===")
+                #print(json.dumps(vlm_objects, ensure_ascii=False, indent=2))
+                
+                # Merge color information into objects based on position matching
+                for vlm_obj in vlm_objects:
+                    vlm_position = vlm_obj.get('位置', '').strip()
+                    vlm_color = vlm_obj.get('颜色', '').strip()
+                    
+                    if vlm_position and vlm_color:
+                        # Find matching object by position label
+                        for obj in objects:
+                            obj_position = obj.get('position_label', '').strip()
+                            if obj_position == vlm_position:
+                                # Add color field to the object
+                                obj['color'] = vlm_color
+                                #print(f"Matched: Position={vlm_position}, Color={vlm_color}")
+                                break
+                
+                # Update object_info_text with color information using _format_object_info
+                object_info_text = self._format_object_info(objects)
+                
+                # Return enhanced results
+                return {
+                    'object_info_text': object_info_text,
+                    'spatial_info_text': f"",
+                    'objects': objects  # Return the enhanced objects with color field
+                }
+                
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse VLM JSON response: {e}")
+                # Return basic results if JSON parsing fails
+                return {
+                    'object_info_text': f"基础检测信息：\n{object_info_text}",
+                    'spatial_info_text': f"VLM分析(非结构化)：{response_text}"
+                }
+                
         except Exception as e:
             print(f"VLM analysis error: {e}")
             # Return basic detection results if VLM fails
             return {
                 'object_info_text': f"基础检测信息：\n{object_info_text}",
-                'spatial_info_text': "无空间信息"
+                'spatial_info_text': ""
             }
             
             
@@ -946,7 +1063,7 @@ class XAgent:
             return ret
         
         # Format initial object detection results
-        object_info_text, enhanced_objects = self._format_object_info(objects)
+        object_info_text = self._format_object_info(objects)
         print("\n=== object_info_text ===")
         print(object_info_text)
         
@@ -1073,7 +1190,7 @@ class XAgent:
             if isinstance(image, str):
                 if image.startswith('http'):
                     # Download image for processing
-                    import requests
+                    # requests already imported at top
                     response = requests.get(image)
                     rgb = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_COLOR)
                 else:
@@ -1085,7 +1202,7 @@ class XAgent:
                 return [{'error': f'Unsupported image type: {type(image)}'}]
             
             # Perform grasp detection
-            result, padded_img = self.grasp_api.forward(
+            result, _ = self.grasp_api.forward(
                 rgb=rgb,
                 bag=bag_mode,
                 use_touching_points=use_touching_points
@@ -1114,13 +1231,14 @@ if __name__ == "__main__":
     xagent = XAgent(use_default_configs=True)
     
     # Test with an example image
-    test_image = "example.jpg"  # or "example_s.jpg"
+    #test_image = "example.jpg"  # or "example_s.jpg"
+    test_image = "samples/X9.png"  
     
     '''
     print("\n" + "="*60)
     print("Test 1: Object Description with Small VLM")
     print("="*60)
-    result = xagent.describe_objects(test_image, model="qwen2.5-vl-3b-instruct")
+    result = xagent.describe_objects_fast(test_image, model="qwen2.5-vl-3b-instruct")
     print("\nObject Information:")
     print(result['object_info_text'][:500] + "..." if len(result['object_info_text']) > 500 else result['object_info_text'])
     print("\nSpatial Information:")
@@ -1128,12 +1246,11 @@ if __name__ == "__main__":
     '''
     
     
-    
     # Test 2: Test fast planning
     print("\n" + "="*60)
     print("Test 2: Fast Planning with Decoupled Models")
     print("="*60)
-    task = "要求交换和调整纯色手提袋位置，实现从左到右依次排列粉色、黄色、蓝色排列，你打算如何进行"
+    task = "要求交换和调整手提袋位置，实现从左到右依次排列粉色、黄色、浅蓝排列，你打算如何进行"
     print(f"Task: {task}")
     
     import time
@@ -1141,8 +1258,8 @@ if __name__ == "__main__":
     fast_actions = xagent.get_plan_fast(
         image_path=test_image,
         text=task,
-        vlm_model="qwen2.5-vl-7b-instruct",
-        llm_model="qwen3-8b"
+        vlm_model="qwen2.5-vl-32b-instruct",  # 使用更强大的模型
+        llm_model="qwen3-30b-a3b-thinking-2507"
     )
     fast_time = time.time() - start_time
     
