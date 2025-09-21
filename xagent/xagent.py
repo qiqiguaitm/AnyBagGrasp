@@ -423,27 +423,27 @@ class XAgent:
         
         return "抓取检测结果:\n" + "\n".join(grasp_info)
     
-    def _format_object_info(self, objects: List[Dict]) -> str:
+    def _format_object_info(self, objects: List[Dict]) -> tuple:
         """
-        Format object detection results for VLM prompt
+        Format object detection results and add position labels
         
         Args:
             objects: List of object detection results
             
         Returns:
-            Formatted string describing object information
+            Tuple of (formatted string, enhanced objects list with position_label)
         """
         if not objects or 'error' in objects[0]:
-            return "对象检测: 未检测到对象"
+            return "对象检测: 未检测到对象", objects
         
         # First, sort objects by x-coordinate to determine positions
         objects_with_x = []
-        for obj in objects:
+        for idx, obj in enumerate(objects):
             bbox = obj.get('bbox', [])
             if bbox and len(bbox) >= 4:
                 x1, y1, x2, y2 = bbox[:4]
                 center_x = (x1 + x2) / 2
-                objects_with_x.append((center_x, obj))
+                objects_with_x.append((center_x, idx, obj))
         
         # Sort by x-coordinate
         objects_with_x.sort(key=lambda x: x[0])
@@ -471,20 +471,22 @@ class XAgent:
                 else:
                     position_labels.append("右")
         
+        # Create position mapping for original objects
+        position_map = {}
+        for i, (x_coord, orig_idx, obj) in enumerate(objects_with_x):
+            if i < len(position_labels):
+                position_map[orig_idx] = position_labels[i]
+        
+        # Add position_label to each object and format info
         object_info = []
+        enhanced_objects = []
+        
         for i, obj in enumerate(objects):
-            # Find position label for this object
-            position = ""
-            bbox = obj.get('bbox', [])
-            if bbox and len(bbox) >= 4:
-                x1, y1, x2, y2 = bbox[:4]
-                center_x = (x1 + x2) / 2
-                # Find this object's position in sorted list
-                for j, (x_coord, sorted_obj) in enumerate(objects_with_x):
-                    if abs(x_coord - center_x) < 1:  # Same object
-                        if j < len(position_labels):
-                            position = position_labels[j]
-                        break
+            # Create a copy of the object and add position_label
+            enhanced_obj = obj.copy()
+            position = position_map.get(i, "未知")
+            enhanced_obj['position_label'] = position
+            enhanced_objects.append(enhanced_obj)
             
             # Format object description
             obj_desc = f"对象{i+1}:"
@@ -495,10 +497,10 @@ class XAgent:
                 obj_desc += f" 类别({category})"
             
             # Add position
-            if position:
-                obj_desc += f" 位置({position})"
+            obj_desc += f" 位置({position})"
             
             # Add coordinates and size
+            bbox = obj.get('bbox', [])
             if bbox and len(bbox) >= 4:
                 x1, y1, x2, y2 = bbox[:4]
                 center_x = (x1 + x2) / 2
@@ -514,7 +516,8 @@ class XAgent:
             
             object_info.append(obj_desc)
         
-        return "对象检测结果:\n" + "\n".join(object_info)
+        object_info_text = "对象检测结果:\n" + "\n".join(object_info)
+        return object_info_text, enhanced_objects
 
     def get_plan(self, image_path: str, text: str, model: Optional[str] = None) -> List[Dict]:
         """
@@ -546,8 +549,7 @@ class XAgent:
             #print(f"DEBUG: Objects result: {objects[:2] if objects else 'None'}")
             
             # Enhance task description with object information
-            object_info_text = self._format_object_info(objects)
-            #object_info_text = self._format_object_info(objects)
+            object_info_text, enhanced_objects = self._format_object_info(objects)
             enhanced_text = f"【重要】以下是检测系统提供的精确物体信息，请优先使用这些数据：\n{object_info_text}\n\n任务要求：{text}"
             
             # Simplified system prompt to avoid timeout issues
@@ -885,7 +887,7 @@ class XAgent:
             return ret
         
         # Format initial object detection results
-        object_info_text = self._format_object_info(objects)
+        object_info_text, enhanced_objects = self._format_object_info(objects)
         
         
         print("\n=== object_info_text ===")
@@ -944,7 +946,7 @@ class XAgent:
             return ret
         
         # Format initial object detection results
-        object_info_text = self._format_object_info(objects)
+        object_info_text, enhanced_objects = self._format_object_info(objects)
         print("\n=== object_info_text ===")
         print(object_info_text)
         
