@@ -672,24 +672,40 @@ class XAgent:
 - pick_n_place(object_id, source_position, target_position) - 从源位置拾取物体并放置到目标位置
 - 临时区域：swap_tmp_area=({self.swap_tmp_area[0]},{self.swap_tmp_area[1]}) 可用于临时放置物体
 
-### 输出要求
-请生成简洁的动作序列，格式如下：
+### ⚠️ 重要规则（避免位置冲突）
+1. **位置冲突检查**：移动物体前，检查目标位置是否已被占用
+2. **使用临时区域**：如果目标位置被占用，先将占用物体移到swap_tmp_area
+3. **顺序执行**：每次只移动一个物体，确保动作序列不会产生冲突
 
+### 位置冲突解决策略
+- 情况1：如果目标位置为空，直接移动物体
+- 情况2：如果目标位置被占用，使用以下步骤：
+  a) 先将占用物体移到swap_tmp_area
+  b) 再将目标物体移到该位置
+  c) 最后将临时区的物体移到新位置
+
+### 示例（避免冲突）
+假设要交换A(100,200)和B(300,400)的位置：
+1. pick_n_place(object_id="A", source_position=(100,200), target_position=swap_tmp_area)
+2. pick_n_place(object_id="B", source_position=(300,400), target_position=(100,200))  
+3. pick_n_place(object_id="A", source_position=swap_tmp_area, target_position=(300,400))
+
+### 输出要求
 **动作序列：**
-1. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x2,y2))
-2. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=swap_tmp_area)
+按顺序列出动作，确保不会产生位置冲突。每个动作格式：
+pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x2,y2))
 
 注意：
-1. 使用检测到的精确坐标
-2. 物体ID必须与场景信息中的物体对应
-3. 合理使用swap_tmp_area避免冲突
-4. 确保动作序列能完成任务要求"""
+- 使用检测到的精确坐标
+- 物体ID必须与场景信息中的物体对应
+- 必须使用swap_tmp_area解决位置冲突
+- 确保每个动作执行后，不会有两个物体在同一位置"""
 
             # Step 3: Call LLM for planning (text-only)
             messages = [
                 {
                     "role": "system",
-                    "content": "你是一个专业的机器人任务规划系统。根据提供的场景信息生成精确的动作序列。"
+                    "content": "你是一个专业的机器人任务规划系统。你必须：1)避免位置冲突 2)使用swap_tmp_area临时区域来解决冲突 3)确保每个物体移动后不会与其他物体位置重叠。生成的动作序列必须按顺序执行且不产生冲突。"
                 },
                 {
                     "role": "user",
