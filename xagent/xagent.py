@@ -185,71 +185,110 @@ class XAgent:
         import re
         objects = {}
         
-        # Try multiple patterns to match different response formats
-        patterns = [
-            # Pattern 1: **物体1: Name**
-            (r'\*\*物体\d+:\s*([^*\n]+?)\*\*\s*(.*?)(?=\n\*\*物体\d+:|\n###|$)', True),
-            # Pattern 2: **物体ID: xxx** or **物体ID：xxx**
-            (r'\*\*物体ID[：:]\s*([^*\n]+?)\*\*\s*(.*?)(?=\n\*\*物体ID|\*\*空间分析|$)', True),
-            # Pattern 3: 物体ID: xxx (without asterisks)
-            (r'(?:^|\n)物体ID[：:]\s*([^\n]+?)\n(.*?)(?=\n物体ID[：:]|\n\*\*空间分析|$)', True),
-            # Pattern 4: - 物体ID: xxx (with dash)
-            (r'-\s*物体ID[：:]\s*([^\n]+?)\n(.*?)(?=\n-\s*物体ID[：:]|\n\*\*空间分析|$)', True),
-            # Pattern 5: 对象1: xxx format
-            (r'(?:^|\n)(对象\d+)[：:]\s*([^\n]*?)(?=\n对象\d+[：:]|\n\*\*|$)', False)
-        ]
+        # Find the object analysis section
+        obj_section_match = re.search(r'\*\*物体分析：\*\*(.*?)(?=\*\*空间分析：\*\*|$)', response_text, re.DOTALL)
+        if not obj_section_match:
+            return objects
+            
+        obj_section = obj_section_match.group(1)
         
-        for pattern, has_content in patterns:
-            matches = re.findall(pattern, response_text, re.DOTALL | re.MULTILINE)
-            if matches:
-                print(f"Found {len(matches)} matches with pattern {patterns.index((pattern, has_content)) + 1}")
-                break
+        # Pattern to match each object block with bullet point structure:
+        # - 物体ID：[ID编号+使用有意义的可区分的中文名称，如"粉色手提袋"]
+        #   - 类别：粉色手提袋
+        #   - 颜色：粉红色
+        #   - 大小：236x407像素
+        #   - 位置：(981, 459)
+        #   - 材质：纸张
         
-        # Process matches based on pattern type
-        if matches and has_content:
-            for object_id, content in matches:
-                # Clean up object_id
-                object_id = object_id.strip().rstrip('*:：').strip()
+        # Split by main object entries (those starting with - 物体ID)
+        object_blocks = re.split(r'\n(?=-\s*物体ID)', obj_section.strip())
+        
+        for block in object_blocks:
+            if not block.strip():
+                continue
+                
+            lines = block.strip().split('\n')
+            
+            # Parse the object ID from the first line
+            id_match = re.match(r'-\s*物体ID[：:]\s*\[([^\]]+)\]', lines[0])
+            if not id_match:
+                # Try simpler format without brackets
+                id_match = re.match(r'-\s*物体ID[：:]\s*(.+)', lines[0])
+            
+            if id_match:
+                object_id = id_match.group(1).strip()
+                # Clean up ID - extract meaningful name part
+                if '如"' in object_id:
+                    # Extract the example name
+                    example_match = re.search(r'如"([^"]+)"', object_id)
+                    if example_match:
+                        object_id = example_match.group(1)
+                elif '+' in object_id:
+                    # Take the part after +
+                    parts = object_id.split('+')
+                    if len(parts) > 1:
+                        object_id = parts[1].strip().strip('，').strip('"')
+                
                 obj_info = {}
-            
-            # Parse each attribute - handle both [] and non-bracketed formats
-            attributes = {
-                '类别': [r'-\s*类别:\s*(.+?)(?=\n|$)', r'类别:\s*(.+?)(?=\n|$)'],
-                '颜色': [r'-\s*颜色:\s*(.+?)(?=\n|$)', r'颜色:\s*(.+?)(?=\n|$)'],
-                '大小': [r'-\s*大小:\s*(.+?)(?=\n|$)', r'大小:\s*(.+?)(?=\n|$)'],
-                '位置': [r'-\s*位置:\s*(.+?)(?=\n|$)', r'位置:\s*(.+?)(?=\n|$)'],
-
-            }
-            
-            for attr_name, patterns in attributes.items():
-                for pattern in patterns:
-                    match = re.search(pattern, content)
-                    if match:
-                        value = match.group(1).strip()
-                        # Clean up the value
-                        value = value.rstrip('-').strip()
-                        if value and value != '[' and not value.startswith('*'):
-                            obj_info[attr_name] = value
-                            break
-            
-                # Only add object if it has some attributes
+                
+                # Parse attributes from subsequent lines
+                for line in lines[1:]:
+                    line = line.strip()
+                    if line.startswith('-'):
+                        # Parse attribute line
+                        attr_match = re.match(r'-\s*([^：:]+)[：:](.+)', line)
+                        if attr_match:
+                            attr_name = attr_match.group(1).strip()
+                            attr_value = attr_match.group(2).strip()
+                            obj_info[attr_name] = attr_value
+                
+                # Add object if it has attributes
                 if obj_info:
+                    # Handle duplicate IDs by adding index
+                    base_id = object_id
+                    if object_id in objects:
+                        counter = 2
+                        while f"{base_id}{counter}" in objects:
+                            counter += 1
+                        object_id = f"{base_id}{counter}"
                     objects[object_id] = obj_info
-        elif matches and not has_content:
-            # Handle simple object format (对象1: 类别(xxx)...)
-            for obj_id, description in matches:
-                obj_info = {}
-                # Parse inline description
-                if '类别(' in description:
-                    category_match = re.search(r'类别\(([^)]+)\)', description)
-                    if category_match:
-                        obj_info['类别'] = category_match.group(1)
-                if '位置(' in description:
-                    pos_match = re.search(r'位置\((\d+),(\d+)\)', description)
-                    if pos_match:
-                        obj_info['位置'] = f"({pos_match.group(1)},{pos_match.group(2)})"
-                if obj_info:
-                    objects[obj_id] = obj_info
+        
+        # If no objects found with the above pattern, try alternative patterns
+        if not objects:
+            # Try pattern for inline format: 物体1: xxx
+            patterns = [
+                (r'\*\*物体\d+:\s*([^*\n]+?)\*\*\s*(.*?)(?=\n\*\*物体\d+:|\n###|$)', True),
+                (r'(?:^|\n)(对象\d+)[：:]\s*([^\n]*?)(?=\n对象\d+[：:]|\n\*\*|$)', False)
+            ]
+            
+            for pattern, has_content in patterns:
+                matches = re.findall(pattern, response_text, re.DOTALL | re.MULTILINE)
+                if matches:
+                    break
+            
+            if matches and has_content:
+                for object_id, content in matches:
+                    object_id = object_id.strip().rstrip('*:：').strip()
+                    obj_info = {}
+                    
+                    # Parse attributes
+                    attributes = {
+                        '类别': [r'类别[：:]\s*(.+?)(?=\n|$)'],
+                        '颜色': [r'颜色[：:]\s*(.+?)(?=\n|$)'],
+                        '大小': [r'大小[：:]\s*(.+?)(?=\n|$)'],
+                        '位置': [r'位置[：:]\s*(.+?)(?=\n|$)'],
+                        '材质': [r'材质[：:]\s*(.+?)(?=\n|$)']
+                    }
+                    
+                    for attr_name, patterns in attributes.items():
+                        for pattern in patterns:
+                            match = re.search(pattern, content)
+                            if match:
+                                obj_info[attr_name] = match.group(1).strip()
+                                break
+                    
+                    if obj_info:
+                        objects[object_id] = obj_info
         
         return objects
     
@@ -796,18 +835,18 @@ class XAgent:
         # Step 2: Create prompt for VLM to analyze objects and spatial relationships
         analysis_prompt = f"""请详细分析图像中的物体和空间关系。
 
-已检测到的物体信息：
+已检测到的物体详细信息：
 {object_info_text}
 
 针对已经检测到的物体，进行以下分析：
 
 **物体分析：**
 对每个检测到的物体进行详细描述，包括：
-- 物体ID：[ID编号+使用有意义的可区分的中文名称，如"粉色手提袋"]
+- 物体ID：[使用有意义的可区分的中文名称，如"粉色手提袋"]
 - 类别：[具体类别]
 - 颜色：[主要颜色和辅助颜色]
-- 大小：[相对大小和像素尺寸，使用已经提供的检测到的精确尺寸]
-- 位置：[使用已经提供的检测到的精确坐标]
+- 大小：[相对大小和像素尺寸，使用已经提供的检测到的精确尺寸w,h]
+- 位置：[使用已经提供的检测到的精确坐标x,y]
 - 材质：[如果可见]
 
 **空间分析：**
@@ -960,7 +999,7 @@ if __name__ == "__main__":
     # Test with an example image
     test_image = "example.jpg"  # or "example_s.jpg"
     
-    # Test 1: Test describe_objects with small VLM
+    '''
     print("\n" + "="*60)
     print("Test 1: Object Description with Small VLM")
     print("="*60)
@@ -969,6 +1008,8 @@ if __name__ == "__main__":
     print(result['object_info_text'][:500] + "..." if len(result['object_info_text']) > 500 else result['object_info_text'])
     print("\nSpatial Information:")
     print(result['spatial_info_text'][:500] + "..." if len(result['spatial_info_text']) > 500 else result['spatial_info_text'])
+    '''
+    
     
     # Test 2: Test fast planning
     print("\n" + "="*60)
