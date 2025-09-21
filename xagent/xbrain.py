@@ -44,6 +44,7 @@ class DashscopePlatform(VLMPlatform):
             "qwen-vl-max",
             "qwen-vl-plus",
             'qwen2.5-vl-3b-instruct',
+             "qwen2.5-vl-7b-instruct",
             # Text-only LLM models
             "qwen3-4b",
             "qwen3-8b",
