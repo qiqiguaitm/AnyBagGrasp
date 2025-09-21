@@ -436,9 +436,57 @@ class XAgent:
         if not objects or 'error' in objects[0]:
             return "对象检测: 未检测到对象"
         
+        # First, sort objects by x-coordinate to determine positions
+        objects_with_x = []
+        for obj in objects:
+            bbox = obj.get('bbox', [])
+            if bbox and len(bbox) >= 4:
+                x1, y1, x2, y2 = bbox[:4]
+                center_x = (x1 + x2) / 2
+                objects_with_x.append((center_x, obj))
+        
+        # Sort by x-coordinate
+        objects_with_x.sort(key=lambda x: x[0])
+        
+        # Determine position labels based on number of objects
+        num_objects = len(objects_with_x)
+        position_labels = []
+        if num_objects == 1:
+            position_labels = ["中"]
+        elif num_objects == 2:
+            position_labels = ["左", "右"]
+        elif num_objects == 3:
+            position_labels = ["左", "中", "右"]
+        elif num_objects == 4:
+            position_labels = ["左", "中左", "中右", "右"]
+        elif num_objects == 5:
+            position_labels = ["左", "中左", "中", "中右", "右"]
+        else:
+            # For more objects, divide into thirds
+            for i in range(num_objects):
+                if i < num_objects // 3:
+                    position_labels.append("左")
+                elif i < 2 * num_objects // 3:
+                    position_labels.append("中")
+                else:
+                    position_labels.append("右")
+        
         object_info = []
         for i, obj in enumerate(objects):
-            # Remove mask field and format key information
+            # Find position label for this object
+            position = ""
+            bbox = obj.get('bbox', [])
+            if bbox and len(bbox) >= 4:
+                x1, y1, x2, y2 = bbox[:4]
+                center_x = (x1 + x2) / 2
+                # Find this object's position in sorted list
+                for j, (x_coord, sorted_obj) in enumerate(objects_with_x):
+                    if abs(x_coord - center_x) < 1:  # Same object
+                        if j < len(position_labels):
+                            position = position_labels[j]
+                        break
+            
+            # Format object description
             obj_desc = f"对象{i+1}:"
             
             # Add category information if available
@@ -446,14 +494,18 @@ class XAgent:
             if category and category != '未知':
                 obj_desc += f" 类别({category})"
             
-            bbox = obj.get('bbox', [])
+            # Add position
+            if position:
+                obj_desc += f" 位置({position})"
+            
+            # Add coordinates and size
             if bbox and len(bbox) >= 4:
                 x1, y1, x2, y2 = bbox[:4]
                 center_x = (x1 + x2) / 2
                 center_y = (y1 + y2) / 2
                 width = x2 - x1
                 height = y2 - y1
-                obj_desc += f" 位置({center_x:.0f},{center_y:.0f}) 尺寸({width:.0f}x{height:.0f})"
+                obj_desc += f" 坐标({center_x:.0f},{center_y:.0f}) 尺寸({width:.0f}x{height:.0f})"
             
             # Add detection confidence score
             score = obj.get('score', 0.0)
@@ -808,6 +860,65 @@ class XAgent:
             
         except Exception as e:
             return [{'error': str(e)}]
+        
+    def describe_objects_fast(self, image_path: str, model: Optional[str] = None) -> Dict[str, str]:
+        """
+        Describe objects in an image with detailed object and spatial analysis
+        
+        Args:
+            image_path: Path to the image file
+            model: Optional VLM model to use
+            
+        Returns:
+            Dictionary containing:
+                - 'object_info_text': Updated detailed object information
+                - 'spatial_info_text': Spatial relationship analysis
+        """
+        # Step 1: Get objects using detection API
+        objects = self.get_objects(image_path)
+        if not objects or 'error' in objects[0]:
+            ret =  {
+                'object_info_text': "未检测到物体",
+                'spatial_info_text': "无空间信息"
+            }
+            print(ret)
+            return ret
+        
+        # Format initial object detection results
+        object_info_text = self._format_object_info(objects)
+        
+        
+        print("\n=== object_info_text ===")
+        print(object_info_text)
+        
+        # Step 2: Create prompt for VLM to analyze objects and spatial relationships
+        analysis_prompt = f"""请为仔细观察画面中的所有手提袋，补充以下颜色(粉色|浅蓝|黄色)和位置信息(左|中|右)：
+- 物体ID：[颜色+类型，如"粉色手提袋"]
+  - 颜色：[粉色|浅蓝|黄色]
+  - 位置：[左|中|右]"""
+
+        try:
+            # Step 3: Call VLM for detailed analysis
+            print("\n=== Calling VLM for analysis ===")
+            response_text = self.xbrain.chat_with_image(
+                image=image_path,
+                text=analysis_prompt,
+                system_prompt="你是一个专业的视觉分析系统，能够精确识别和描述物体及其空间关系。请严格按照要求的格式输出。",
+                model=model
+            )
+            
+            print("\n=== VLM Raw Response ===")
+            print(response_text)
+        except Exception as e:
+            print(f"VLM analysis error: {e}")
+            # Return basic detection results if VLM fails
+            return {
+                'object_info_text': f"基础检测信息：\n{object_info_text}",
+                'spatial_info_text': "无空间信息"
+            }
+            
+            
+            
     
     def describe_objects(self, image_path: str, model: Optional[str] = None) -> Dict[str, str]:
         """
