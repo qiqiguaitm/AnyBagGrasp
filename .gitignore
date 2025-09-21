@@ -37,7 +37,7 @@ venv/
 images/
 data/
 log/
-samples/
+# samples/  # Commented out to include sample images
 output/
 checkpoints/
 models/
