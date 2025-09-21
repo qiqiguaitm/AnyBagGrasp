@@ -1,3 +1,8 @@
+"""
+XAgent - Robot Agent Brain for task planning and control
+Version: 0.2.0
+"""
+
 import os
 import base64
 from typing import List, Dict, Union, Optional
@@ -7,6 +12,8 @@ import cv2
 import numpy as np
 import requests
 from mmengine.config import Config
+
+__version__ = "0.2.0"
 
 
 try:
@@ -1232,7 +1239,8 @@ if __name__ == "__main__":
     
     # Test with an example image
     #test_image = "example.jpg"  # or "example_s.jpg"
-    test_image = "samples/X9.png"  
+    test_image = "samples/S3.jpg"  
+    test_image = "samples/X3.png"  
     
     '''
     print("\n" + "="*60)
