@@ -650,7 +650,9 @@ class XAgent:
             print("\n[Step 1] Object and Spatial Analysis with Small VLM...")
             description = self.describe_objects(image_path, model=vlm_model)
             object_info_text = description['object_info_text']
+            print(f"Object Info:\n{object_info_text}")  
             spatial_info_text = description['spatial_info_text']
+            print(f"Spatial Info:\n{spatial_info_text}")
             
             print("\n[Step 2] Task Planning with Small LLM...")
             
@@ -672,40 +674,24 @@ class XAgent:
 - pick_n_place(object_id, source_position, target_position) - 从源位置拾取物体并放置到目标位置
 - 临时区域：swap_tmp_area=({self.swap_tmp_area[0]},{self.swap_tmp_area[1]}) 可用于临时放置物体
 
-### ⚠️ 重要规则（避免位置冲突）
-1. **位置冲突检查**：移动物体前，检查目标位置是否已被占用
-2. **使用临时区域**：如果目标位置被占用，先将占用物体移到swap_tmp_area
-3. **顺序执行**：每次只移动一个物体，确保动作序列不会产生冲突
-
-### 位置冲突解决策略
-- 情况1：如果目标位置为空，直接移动物体
-- 情况2：如果目标位置被占用，使用以下步骤：
-  a) 先将占用物体移到swap_tmp_area
-  b) 再将目标物体移到该位置
-  c) 最后将临时区的物体移到新位置
-
-### 示例（避免冲突）
-假设要交换A(100,200)和B(300,400)的位置：
-1. pick_n_place(object_id="A", source_position=(100,200), target_position=swap_tmp_area)
-2. pick_n_place(object_id="B", source_position=(300,400), target_position=(100,200))  
-3. pick_n_place(object_id="A", source_position=swap_tmp_area, target_position=(300,400))
-
 ### 输出要求
+请生成简洁的动作序列，格式如下：
+
 **动作序列：**
-按顺序列出动作，确保不会产生位置冲突。每个动作格式：
-pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x2,y2))
+1. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x2,y2))
+2. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=swap_tmp_area)
 
 注意：
-- 使用检测到的精确坐标
-- 物体ID必须与场景信息中的物体对应
-- 必须使用swap_tmp_area解决位置冲突
-- 确保每个动作执行后，不会有两个物体在同一位置"""
+1. 使用检测到的精确坐标
+2. 物体ID必须与场景信息中的物体对应
+3. 合理使用swap_tmp_area避免冲突
+4. 确保动作序列能完成任务要求"""
 
             # Step 3: Call LLM for planning (text-only)
             messages = [
                 {
                     "role": "system",
-                    "content": "你是一个专业的机器人任务规划系统。你必须：1)避免位置冲突 2)使用swap_tmp_area临时区域来解决冲突 3)确保每个物体移动后不会与其他物体位置重叠。生成的动作序列必须按顺序执行且不产生冲突。"
+                    "content": "你是一个专业的机器人任务规划系统。根据提供的场景信息生成精确的动作序列。"
                 },
                 {
                     "role": "user",
@@ -761,7 +747,7 @@ pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x
                 }
             ]
     
-    def get_objects(self, image: Union[str, np.ndarray], prompt_text: str = "pink bag. yellow bag. blue bag", 
+    def get_objects(self, image: Union[str, np.ndarray], prompt_text: str = "bag", 
                    bbox_threshold: float = 0.25, iou_threshold: float = 0.8) -> List[Dict]:
         """
         Detect objects in the image using DetectionAPI
@@ -838,38 +824,50 @@ pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x
         """
         # Step 1: Get objects using detection API
         objects = self.get_objects(image_path)
-        
         if not objects or 'error' in objects[0]:
-            return {
+            ret =  {
                 'object_info_text': "未检测到物体",
                 'spatial_info_text': "无空间信息"
             }
+            print(ret)
+            return ret
         
         # Format initial object detection results
         object_info_text = self._format_object_info(objects)
+        print("\n=== object_info_text ===")
+        print(object_info_text)
         
         # Step 2: Create prompt for VLM to analyze objects and spatial relationships
-        analysis_prompt = f"""请详细分析图像中的物体和空间关系。
+        analysis_prompt = f"""请分析图像中的物体，将你看到的物体与检测结果对应起来。
 
-已检测到的物体详细信息：
+检测到的物体坐标（供你参考）：
 {object_info_text}
 
-针对已经检测到的物体，进行以下分析：
+请完成以下分析：
 
 **物体分析：**
-对每个检测到的物体进行详细描述，包括：
-- 物体ID：[使用有意义的可区分的中文名称，如"粉色手提袋"]
-- 类别：[具体类别]
-- 颜色：[主要颜色和辅助颜色]
-- 大小：[相对大小和像素尺寸，使用已经提供的检测到的精确尺寸w,h]
-- 位置：[使用已经提供的检测到的精确坐标x,y]
-- 材质：[如果可见]
+观察图像，为每个看到的物体填写以下信息（根据物体在画面中的位置，灵活匹配上述检测坐标）：
+
+- 物体ID：粉色手提袋
+  - 类别：手提袋
+  - 颜色：粉色
+  - 大小：（从检测结果中选择合适的尺寸）
+  - 位置：（从检测结果中选择对应的坐标）
+  - 材质：纸质
+
+- 物体ID：黄色手提袋
+  - 类别：手提袋
+  - 颜色：黄色
+  - 大小：（从检测结果中选择合适的尺寸）
+  - 位置：（从检测结果中选择对应的坐标）
+  - 材质：纸质
+
+（继续为所有看到的物体填写类似信息）
 
 **空间分析：**
-- 整体布局：[描述物体在场景中的总体分布]
-- 左右顺序：[从左到右列出物体]
-- 前后关系：[描述深度层次]
-"""
+- 整体布局：描述物体的分布情况
+- 左右顺序：按照x坐标从小到大，列出物体名称
+- 前后关系：描述物体的前后层次关系"""
 
         try:
             # Step 3: Call VLM for detailed analysis
@@ -1027,11 +1025,12 @@ if __name__ == "__main__":
     '''
     
     
+    
     # Test 2: Test fast planning
     print("\n" + "="*60)
     print("Test 2: Fast Planning with Decoupled Models")
     print("="*60)
-    task = "将手提袋从左到右按照粉色、黄色、蓝色的顺序排列"
+    task = "要求交换和调整纯色手提袋位置，实现从左到右依次排列粉色、黄色、蓝色排列，你打算如何进行"
     print(f"Task: {task}")
     
     import time
@@ -1040,12 +1039,13 @@ if __name__ == "__main__":
         image_path=test_image,
         text=task,
         vlm_model="qwen2.5-vl-3b-instruct",
-        llm_model="qwen-turbo"  # Use qwen-turbo instead of qwen3-4b to avoid thinking model issues
+        llm_model="qwen3-4b"
     )
     fast_time = time.time() - start_time
     
     print(f"\n✅ Fast planning completed in {fast_time:.2f} seconds")
     print(f"Generated {len(fast_actions)} actions")
+    
     
     
     '''
