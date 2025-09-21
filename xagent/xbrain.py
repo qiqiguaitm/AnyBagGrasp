@@ -38,11 +38,18 @@ class DashscopePlatform(VLMPlatform):
         )
         
         self.supported_models = [
+            # VLM models
             "qwen-vl-max-latest",
             "qwen2.5-vl-72b-instruct",
             "qwen-vl-max",
             "qwen-vl-plus",
             'qwen2.5-vl-3b-instruct',
+            # Text-only LLM models
+            "qwen3-4b",
+            "qwen3-8b",
+            "qwen3-0.6b",
+            "qwen-max",
+            "qwen-turbo",
         ]
     
     def chat_completion(self, messages: List[Dict], model: str, **kwargs) -> str:

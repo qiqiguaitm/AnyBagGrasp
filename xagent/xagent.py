@@ -586,6 +586,125 @@ class XAgent:
                 }
             ]
 
+    def get_plan_fast(self, image_path: str, text: str, vlm_model: Optional[str] = "qwen2.5-vl-3b-instruct", 
+                      llm_model: Optional[str] = "qwen-turbo") -> List[Dict]:
+        """
+        Fast action planning using decoupled small models:
+        1. Small VLM for object and spatial understanding
+        2. Small LLM for task planning
+        
+        Args:
+            image_path: Path to the image file
+            text: Task description text
+            vlm_model: Small VLM model for vision understanding (default: qwen2.5-vl-3b-instruct)
+            llm_model: Small LLM model for planning (default: qwen-turbo)
+            
+        Returns:
+            List of action dictionaries with same structure as get_plan
+        """
+        try:
+            print("=== Starting get_plan_fast (Decoupled Mode) ===")
+            print(f"VLM Model: {vlm_model}")
+            print(f"LLM Model: {llm_model}")
+            
+            # Step 1: Use small VLM for object and spatial understanding
+            print("\n[Step 1] Object and Spatial Analysis with Small VLM...")
+            description = self.describe_objects(image_path, model=vlm_model)
+            object_info_text = description['object_info_text']
+            spatial_info_text = description['spatial_info_text']
+            
+            print("\n[Step 2] Task Planning with Small LLM...")
+            
+            # Step 2: Prepare context for LLM planning
+            planning_prompt = f"""你是一个机器人任务规划专家。基于以下场景信息，生成精确的动作序列。
+
+### 场景信息
+
+**检测到的物体：**
+{object_info_text}
+
+**空间关系：**
+{spatial_info_text}
+
+### 任务要求
+{text}
+
+### 可用操作
+- pick_n_place(object_id, source_position, target_position) - 从源位置拾取物体并放置到目标位置
+- 临时区域：swap_tmp_area=({self.swap_tmp_area[0]},{self.swap_tmp_area[1]}) 可用于临时放置物体
+
+### 输出要求
+请生成简洁的动作序列，格式如下：
+
+**动作序列：**
+1. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=(x2,y2))
+2. pick_n_place(object_id="物体名称", source_position=(x,y), target_position=swap_tmp_area)
+
+注意：
+1. 使用检测到的精确坐标
+2. 物体ID必须与场景信息中的物体对应
+3. 合理使用swap_tmp_area避免冲突
+4. 确保动作序列能完成任务要求"""
+
+            # Step 3: Call LLM for planning (text-only)
+            messages = [
+                {
+                    "role": "system",
+                    "content": "你是一个专业的机器人任务规划系统。根据提供的场景信息生成精确的动作序列。"
+                },
+                {
+                    "role": "user",
+                    "content": planning_prompt
+                }
+            ]
+            
+            # Use text-only chat method for LLM
+            # Note: qwen3 models work with standard chat API
+            llm_response = self.xbrain.chat(messages, model=llm_model)
+            
+            print("=== LLM Planning Response ===")
+            print(llm_response)
+            
+            # Step 4: Parse the action list from LLM response
+            action_list = self._parse_action_list(llm_response)
+            
+            print(f"\n=== Fast Planning Complete ===")
+            print(f"Generated {len(action_list)} actions")
+            
+            # Print action summary
+            for i, action in enumerate(action_list, 1):
+                if action['type'] == 'pick_n_place':
+                    params = action['params']
+                    obj_id = params.get('object_id', 'unknown')
+                    source = params.get('source_position', 'unknown')
+                    target = params.get('target_position', 'unknown')
+                    
+                    # Format positions
+                    if isinstance(source, tuple):
+                        source_str = f"({source[0]:.0f},{source[1]:.0f})"
+                    else:
+                        source_str = str(source)
+                    
+                    if isinstance(target, tuple):
+                        target_str = f"({target[0]:.0f},{target[1]:.0f})"
+                    else:
+                        target_str = str(target)
+                    
+                    print(f"  {i}. pick_n_place: '{obj_id}' from {source_str} -> to {target_str}")
+                elif action['type'] == 'reset_to_home':
+                    print(f"  {i}. reset_to_home")
+            
+            return action_list
+            
+        except Exception as e:
+            print(f"Error in get_plan_fast: {e}")
+            return [
+                {
+                    'type': 'error',
+                    'description': f'Fast planning failed: {str(e)}',
+                    'params': {'error': str(e)}
+                }
+            ]
     
     def get_objects(self, image: Union[str, np.ndarray], prompt_text: str = "pink bag. yellow bag. blue bag", 
                    bbox_threshold: float = 0.25, iou_threshold: float = 0.8) -> List[Dict]:
@@ -841,14 +960,35 @@ if __name__ == "__main__":
     # Test with an example image
     test_image = "example.jpg"  # or "example_s.jpg"
     
-    # Test with Dashscope
-    #result = xagent.describe_objects(test_image, model="qwen-vl-plus")
-    #result = xagent.describe_objects(test_image, model="qwen2.5-vl-72b-instruct")
+    # Test 1: Test describe_objects with small VLM
+    print("\n" + "="*60)
+    print("Test 1: Object Description with Small VLM")
+    print("="*60)
     result = xagent.describe_objects(test_image, model="qwen2.5-vl-3b-instruct")
     print("\nObject Information:")
-    print(result['object_info_text'])
+    print(result['object_info_text'][:500] + "..." if len(result['object_info_text']) > 500 else result['object_info_text'])
     print("\nSpatial Information:")
-    print(result['spatial_info_text'])
+    print(result['spatial_info_text'][:500] + "..." if len(result['spatial_info_text']) > 500 else result['spatial_info_text'])
+    
+    # Test 2: Test fast planning
+    print("\n" + "="*60)
+    print("Test 2: Fast Planning with Decoupled Models")
+    print("="*60)
+    task = "将手提袋从左到右按照粉色、黄色、蓝色的顺序排列"
+    print(f"Task: {task}")
+    
+    import time
+    start_time = time.time()
+    fast_actions = xagent.get_plan_fast(
+        image_path=test_image,
+        text=task,
+        vlm_model="qwen2.5-vl-3b-instruct",
+        llm_model="qwen3-4b"
+    )
+    fast_time = time.time() - start_time
+    
+    print(f"\n✅ Fast planning completed in {fast_time:.2f} seconds")
+    print(f"Generated {len(fast_actions)} actions")
     
     
     '''
