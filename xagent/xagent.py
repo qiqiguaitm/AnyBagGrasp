@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 import requests
 from mmengine.config import Config
+import time
 
 __version__ = "0.2.0"
 
@@ -1243,25 +1244,21 @@ if __name__ == "__main__":
     test_image = "samples/X3.png"  
     
     '''
+    # Original test code (commented out)
+    # text_prompt = "要求交换和调整纯色手提袋位置，实现从左到右依次排列pink，yellow，blue排列，你打算如何进行。"
+    # action_list = xagent.get_plan("example.jpg", text_prompt, model="qwen-vl-plus")
+   
     print("\n" + "="*60)
     print("Test 1: Object Description with Small VLM")
-    print("="*60)
-    result = xagent.describe_objects_fast(test_image, model="qwen2.5-vl-3b-instruct")
+    result = xagent.describe_objects_fast(test_image, model="qwen2.5-vl-32b-instruct")
     print("\nObject Information:")
     print(result['object_info_text'][:500] + "..." if len(result['object_info_text']) > 500 else result['object_info_text'])
-    print("\nSpatial Information:")
-    print(result['spatial_info_text'][:500] + "..." if len(result['spatial_info_text']) > 500 else result['spatial_info_text'])
     '''
     
-    
-    # Test 2: Test fast planning
-    print("\n" + "="*60)
     print("Test 2: Fast Planning with Decoupled Models")
-    print("="*60)
     task = "要求交换和调整手提袋位置，实现从左到右依次排列粉色、黄色、浅蓝排列，你打算如何进行"
     print(f"Task: {task}")
     
-    import time
     start_time = time.time()
     fast_actions = xagent.get_plan_fast(
         image_path=test_image,
@@ -1275,19 +1272,6 @@ if __name__ == "__main__":
     print(f"Generated {len(fast_actions)} actions")
     
     
+
     
-    '''
-    # Test with SiliconFlow
-    print("\n2. Testing with SiliconFlow platform:")
-    xagent.switch_vlm_platform("siliconflow")
-    result_sf = xagent.describe_objects(test_image, model="zai-org/GLM-4.5V")
-    print("\nObject Information (SiliconFlow):")
-    print(result_sf['object_info_text'])
-    print("\nSpatial Information (SiliconFlow):")
-    print(result_sf['spatial_info_text'])
-    '''
-    # Original test code (commented out)
-    # text_prompt = "要求交换和调整纯色手提袋位置，实现从左到右依次排列pink，yellow，blue排列，你打算如何进行。"
-    # action_list = xagent.get_plan("example.jpg", text_prompt, model="qwen-vl-plus")
-   
     
